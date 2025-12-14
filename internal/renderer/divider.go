@@ -1,7 +1,7 @@
 package renderer
 
 import (
-	"github.com/yourusername/receipt-engine/pkg/receiptformat"
+	"github.com/thereceipt/receipt-engine/pkg/receiptformat"
 )
 
 func (r *Renderer) renderDivider(cmd *receiptformat.Command) error {

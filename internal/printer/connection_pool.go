@@ -3,6 +3,9 @@ package printer
 import (
 	"fmt"
 	"image"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 )
 
@@ -42,6 +45,29 @@ func (p *ConnectionPool) Connect(printer *Printer) error {
 	switch printer.Type {
 	case "usb":
 		conn, err = ConnectUSB(printer.VID, printer.PID)
+		// If USB connection fails, try serial ports as fallback (common on macOS)
+		if err != nil && runtime.GOOS == "darwin" {
+			fmt.Printf("⚠️  USB connection failed for %04X:%04X, trying serial port fallback...\n", printer.VID, printer.PID)
+			// Try to find a serial port that might be this USB device
+			serialPorts := p.findSerialPorts()
+			fmt.Printf("🔍 Found %d serial ports to try\n", len(serialPorts))
+			for _, port := range serialPorts {
+				fmt.Printf("  Trying serial port: %s\n", port)
+				serialConn, serialErr := ConnectSerial(port, 9600)
+				if serialErr == nil {
+					// Serial connection succeeded, use it as fallback
+					fmt.Printf("✅ Successfully connected via serial port: %s\n", port)
+					conn = serialConn
+					err = nil
+					break
+				} else {
+					fmt.Printf("    Failed: %v\n", serialErr)
+				}
+			}
+			if err != nil {
+				fmt.Printf("❌ All serial port attempts failed\n")
+			}
+		}
 	case "serial":
 		conn, err = ConnectSerial(printer.Device, 9600)
 	case "network":
@@ -56,6 +82,39 @@ func (p *ConnectionPool) Connect(printer *Printer) error {
 	
 	p.connections[printer.ID] = conn
 	return nil
+}
+
+// findSerialPorts finds available serial ports (helper for USB fallback)
+func (p *ConnectionPool) findSerialPorts() []string {
+	var ports []string
+	
+	switch runtime.GOOS {
+	case "darwin":
+		skipPatterns := []string{"Bluetooth", "Modem", "SPP", "DialIn", "Callout", "KeySerial", "debug-console"}
+		cuPorts, _ := filepath.Glob("/dev/cu.*")
+		ttyPorts, _ := filepath.Glob("/dev/tty.*")
+		allPorts := append(cuPorts, ttyPorts...)
+		
+		for _, port := range allPorts {
+			skip := false
+			for _, pattern := range skipPatterns {
+				if strings.Contains(port, pattern) {
+					skip = true
+					break
+				}
+			}
+			if !skip {
+				ports = append(ports, port)
+			}
+		}
+	case "linux":
+		usbPorts, _ := filepath.Glob("/dev/ttyUSB*")
+		acmPorts, _ := filepath.Glob("/dev/ttyACM*")
+		ports = append(ports, usbPorts...)
+		ports = append(ports, acmPorts...)
+	}
+	
+	return ports
 }
 
 // Print sends an image to a printer

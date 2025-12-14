@@ -89,7 +89,7 @@ func (q *PrintQueue) worker() {
 func (q *PrintQueue) processNextJob() {
 	q.mu.Lock()
 	
-	// Find next queued job
+	// Find next queued job (skip jobs that are already printing, completed, or failed)
 	var job *PrintJob
 	for _, j := range q.jobs {
 		if j.Status == "queued" {
@@ -105,28 +105,45 @@ func (q *PrintQueue) processNextJob() {
 		return // No jobs to process
 	}
 	
-	// Attempt to print
+	// Attempt to print (only once per job)
 	err := q.printJob(job)
 	
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	
+	// Double-check job still exists and is still in printing status
+	// (prevents race conditions and ensures we only process once)
+	var foundJob *PrintJob
+	for _, j := range q.jobs {
+		if j.ID == job.ID {
+			foundJob = j
+			break
+		}
+	}
+	
+	if foundJob == nil || foundJob.Status != "printing" {
+		// Job was removed or status changed, don't update
+		return
+	}
+	
 	if err != nil {
-		job.Retries++
-		job.Error = err
+		foundJob.Retries++
+		foundJob.Error = err
 		
-		if job.Retries >= q.maxRetries {
-			job.Status = "failed"
-			fmt.Printf("❌ Print job %s failed after %d retries: %v\n", job.ID, job.Retries, err)
+		if foundJob.Retries >= q.maxRetries {
+			foundJob.Status = "failed"
+			fmt.Printf("❌ Print job %s failed after %d retries: %v\n", foundJob.ID, foundJob.Retries, err)
 		} else {
-			job.Status = "queued" // Retry
+			// Retry with delay - mark as queued but add a delay before it can be processed again
+			foundJob.Status = "queued"
 			fmt.Printf("⚠️  Print job %s failed, retrying (%d/%d): %v\n", 
-				job.ID, job.Retries, q.maxRetries, err)
-			time.Sleep(time.Second) // Brief delay before retry
+				foundJob.ID, foundJob.Retries, q.maxRetries, err)
+			// Don't sleep here - let the worker ticker handle timing
 		}
 	} else {
-		job.Status = "completed"
-		fmt.Printf("✅ Print job %s completed\n", job.ID)
+		// Success - mark as completed immediately
+		foundJob.Status = "completed"
+		fmt.Printf("✅ Print job %s completed\n", foundJob.ID)
 	}
 }
 
@@ -143,8 +160,15 @@ func (q *PrintQueue) printJob(job *PrintJob) error {
 		}
 	}
 	
-	// Print
-	return q.pool.Print(job.PrinterID, job.Image)
+	// Print exactly once - Print should be idempotent and atomic
+	// If Print succeeds, it means data was sent once
+	err := q.pool.Print(job.PrinterID, job.Image)
+	if err != nil {
+		return fmt.Errorf("print failed: %w", err)
+	}
+	
+	// Success - return nil to mark job as completed
+	return nil
 }
 
 // GetJob returns a job by ID

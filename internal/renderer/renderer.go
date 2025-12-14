@@ -7,15 +7,16 @@ import (
 	"image/color"
 	
 	"github.com/fogleman/gg"
-	"github.com/yourusername/receipt-engine/pkg/receiptformat"
+	"github.com/thereceipt/receipt-engine/pkg/receiptformat"
 )
 
 // Renderer converts receipt commands to images
 type Renderer struct {
-	width  int // Paper width in pixels
-	height int // Current canvas height
-	ctx    *gg.Context
-	y      float64 // Current Y position
+	width   int // Paper width in pixels
+	height  int // Current canvas height
+	ctx     *gg.Context
+	y       float64 // Current Y position
+	receipt *receiptformat.Receipt // For accessing fonts
 }
 
 // New creates a new renderer
@@ -50,9 +51,9 @@ func (r *Renderer) Render(receipt *receiptformat.Receipt) (image.Image, error) {
 	return r.cropToContent(), nil
 }
 
-// GetImage returns the rendered image
+// GetImage returns the rendered image (cropped to content)
 func (r *Renderer) GetImage() image.Image {
-	return r.ctx.Image()
+	return r.cropToContent()
 }
 
 func (r *Renderer) renderCommand(cmd *receiptformat.Command) error {
@@ -81,16 +82,27 @@ func (r *Renderer) renderCommand(cmd *receiptformat.Command) error {
 }
 
 func (r *Renderer) cropToContent() image.Image {
+	img := r.ctx.Image()
+	bounds := img.Bounds()
+	
 	// Crop to the actual Y position used
 	finalHeight := int(r.y) + 50 // Add small bottom margin
-	if finalHeight > r.height {
-		finalHeight = r.height
+	if finalHeight > bounds.Dy() {
+		finalHeight = bounds.Dy()
+	}
+	if finalHeight < 1 {
+		finalHeight = 1 // Ensure at least 1 pixel height
 	}
 	
-	img := r.ctx.Image()
-	return img.(interface {
+	// Use SubImage if available, otherwise return full image
+	if subImg, ok := img.(interface {
 		SubImage(r image.Rectangle) image.Image
-	}).SubImage(image.Rect(0, 0, r.width, finalHeight))
+	}); ok {
+		return subImg.SubImage(image.Rect(bounds.Min.X, bounds.Min.Y, bounds.Min.X+r.width, bounds.Min.Y+finalHeight))
+	}
+	
+	// Fallback: return full image if SubImage not available
+	return img
 }
 
 func (r *Renderer) ensureHeight(neededHeight int) {

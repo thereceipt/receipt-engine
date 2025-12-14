@@ -1,15 +1,13 @@
 package renderer
 
 import (
-	"bytes"
-	"image"
 	
 	"github.com/boombuler/barcode"
 	"github.com/boombuler/barcode/code128"
 	"github.com/boombuler/barcode/code39"
 	"github.com/boombuler/barcode/ean"
 	"github.com/skip2/go-qrcode"
-	"github.com/yourusername/receipt-engine/pkg/receiptformat"
+	"github.com/thereceipt/receipt-engine/pkg/receiptformat"
 )
 
 func (r *Renderer) renderBarcode(cmd *receiptformat.Command) error {

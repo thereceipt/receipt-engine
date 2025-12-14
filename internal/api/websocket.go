@@ -5,7 +5,11 @@ import (
 	"fmt"
 	"sync"
 	
+	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/thereceipt/receipt-engine/internal/parser"
+	"github.com/thereceipt/receipt-engine/internal/printer"
+	"github.com/thereceipt/receipt-engine/pkg/receiptformat"
 )
 
 // WebSocket message types
@@ -50,26 +54,6 @@ func (s *Server) handleWebSocket(c *gin.Context) {
 	// Start goroutines
 	go client.readPump()
 	go client.writePump()
-}
-
-func (c *WSClient) readPump() {
-	defer func() {
-		c.conn.Close()
-		fmt.Println("📡 WebSocket client disconnected")
-	}()
-	
-	for {
-		var msg WSMessage
-		err := c.conn.ReadJSON(&msg)
-		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				fmt.Printf("WebSocket error: %v\n", err)
-			}
-			break
-		}
-		
-		c.handleMessage(&msg)
-	}
 }
 
 func (c *WSClient) writePump() {
@@ -193,6 +177,47 @@ func (c *WSClient) sendResponse(data map[string]interface{}) {
 	}
 }
 
+// Client tracking for broadcasts
+var (
+	clients   = make(map[*WSClient]bool)
+	clientsMu sync.RWMutex
+)
+
+func addClient(client *WSClient) {
+	clientsMu.Lock()
+	clients[client] = true
+	clientsMu.Unlock()
+}
+
+func removeClient(client *WSClient) {
+	clientsMu.Lock()
+	delete(clients, client)
+	clientsMu.Unlock()
+}
+
+func (c *WSClient) readPump() {
+	defer func() {
+		removeClient(c)
+		c.conn.Close()
+		fmt.Println("📡 WebSocket client disconnected")
+	}()
+	
+	addClient(c)
+	
+	for {
+		var msg WSMessage
+		err := c.conn.ReadJSON(&msg)
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				fmt.Printf("WebSocket error: %v\n", err)
+			}
+			break
+		}
+		
+		c.handleMessage(&msg)
+	}
+}
+
 func (c *WSClient) sendError(message string) {
 	c.send <- WSMessage{
 		Event: EventError,
@@ -202,14 +227,51 @@ func (c *WSClient) sendError(message string) {
 	}
 }
 
-// BroadcastPrinterAdded broadcasts a printer added event
+// BroadcastPrinterAdded broadcasts a printer added event to all connected clients
 func (s *Server) BroadcastPrinterAdded(printer *printer.Printer) {
-	// TODO: Implement client tracking and broadcast
-	fmt.Printf("Printer added: %s\n", printer.Description)
+	clientsMu.RLock()
+	defer clientsMu.RUnlock()
+	
+	message := WSMessage{
+		Event: EventPrinterAdded,
+		Data: map[string]interface{}{
+			"id":          printer.ID,
+			"type":        printer.Type,
+			"description": printer.Description,
+			"name":        printer.Name,
+		},
+	}
+	
+	for client := range clients {
+		select {
+		case client.send <- message:
+		default:
+			// Client send buffer full, skip
+		}
+	}
+	
+	fmt.Printf("📡 Broadcast: Printer added - %s\n", printer.Description)
 }
 
-// BroadcastPrinterRemoved broadcasts a printer removed event
+// BroadcastPrinterRemoved broadcasts a printer removed event to all connected clients
 func (s *Server) BroadcastPrinterRemoved(printerID string) {
-	// TODO: Implement client tracking and broadcast
-	fmt.Printf("Printer removed: %s\n", printerID)
+	clientsMu.RLock()
+	defer clientsMu.RUnlock()
+	
+	message := WSMessage{
+		Event: EventPrinterRemoved,
+		Data: map[string]interface{}{
+			"id": printerID,
+		},
+	}
+	
+	for client := range clients {
+		select {
+		case client.send <- message:
+		default:
+			// Client send buffer full, skip
+		}
+	}
+	
+	fmt.Printf("📡 Broadcast: Printer removed - %s\n", printerID)
 }

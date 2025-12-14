@@ -3,14 +3,14 @@ package renderer
 import (
 	"encoding/base64"
 	"image"
-	"image/draw"
+	"image/color"
 	_ "image/jpeg"
 	_ "image/png"
 	"os"
 	"strings"
 	
 	"github.com/disintegration/imaging"
-	"github.com/yourusername/receipt-engine/pkg/receiptformat"
+	"github.com/thereceipt/receipt-engine/pkg/receiptformat"
 )
 
 func (r *Renderer) renderImage(cmd *receiptformat.Command) error {
@@ -19,9 +19,9 @@ func (r *Renderer) renderImage(cmd *receiptformat.Command) error {
 	
 	if cmd.Base64 != "" {
 		// Decode base64
-		data, err := base64.StdEncoding.DecodeString(cmd.Base64)
-		if err != nil {
-			return err
+		data, decodeErr := base64.StdEncoding.DecodeString(cmd.Base64)
+		if decodeErr != nil {
+			return decodeErr
 		}
 		
 		img, _, err = image.Decode(strings.NewReader(string(data)))

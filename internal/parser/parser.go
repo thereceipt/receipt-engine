@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"image"
 	
-	"github.com/yourusername/receipt-engine/internal/renderer"
-	"github.com/yourusername/receipt-engine/pkg/receiptformat"
+	"github.com/thereceipt/receipt-engine/internal/renderer"
+	"github.com/thereceipt/receipt-engine/pkg/receiptformat"
 )
 
 // Parser executes receipt commands with variable and array support
@@ -23,6 +23,9 @@ func New(receipt *receiptformat.Receipt, paperWidth string) (*Parser, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create renderer: %w", err)
 	}
+	
+	// Set receipt reference for font loading
+	r.SetReceipt(receipt)
 	
 	return &Parser{
 		receipt:           receipt,

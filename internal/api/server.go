@@ -2,15 +2,14 @@
 package api
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
-	"github.com/yourusername/receipt-engine/internal/parser"
-	"github.com/yourusername/receipt-engine/internal/printer"
-	"github.com/yourusername/receipt-engine/pkg/receiptformat"
+	"github.com/thereceipt/receipt-engine/internal/parser"
+	"github.com/thereceipt/receipt-engine/internal/printer"
+	"github.com/thereceipt/receipt-engine/pkg/receiptformat"
 )
 
 // Server is the API server

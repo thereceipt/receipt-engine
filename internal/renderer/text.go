@@ -3,17 +3,24 @@ package renderer
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	
-	"github.com/fogleman/gg"
-	"github.com/yourusername/receipt-engine/pkg/receiptformat"
+	"github.com/thereceipt/receipt-engine/pkg/receiptformat"
 )
 
 func (r *Renderer) renderText(cmd *receiptformat.Command) error {
 	text := cmd.Value
+	
+	// Get size - handle both int and potential float64 from JSON
 	size := float64(cmd.Size)
 	if size == 0 {
-		size = 24
+		size = 32 // Default size (increased from 24)
+	}
+	
+	// Debug: log the size being used
+	if cmd.Size != 0 {
+		fmt.Printf("DEBUG: Using font size %f (from cmd.Size=%d)\n", size, cmd.Size)
+	} else {
+		fmt.Printf("DEBUG: Using default font size %f (cmd.Size was 0)\n", size)
 	}
 	
 	weight := cmd.Weight
@@ -26,11 +33,39 @@ func (r *Renderer) renderText(cmd *receiptformat.Command) error {
 		align = "left"
 	}
 	
-	// Load font
+	// Load font with the specified size
 	fontPath := r.getFontPath(cmd.FontFamily, weight, cmd.Italic)
-	if err := r.ctx.LoadFontFace(fontPath, size); err != nil {
-		// Fallback to default if font loading fails
-		fmt.Printf("Warning: failed to load font %s, using default\n", fontPath)
+	
+	// Always try to load a font with the specified size
+	// If the preferred font fails, fall back to system fonts
+	loaded := false
+	if fontPath != "" {
+		if err := r.ctx.LoadFontFace(fontPath, size); err == nil {
+			loaded = true
+		} else {
+			fmt.Printf("Warning: failed to load font %s at size %f: %v\n", fontPath, size, err)
+		}
+	}
+	
+	// If preferred font didn't load, try system fonts
+	if !loaded {
+		systemFonts := []string{
+			"/System/Library/Fonts/Helvetica.ttc",
+			"/System/Library/Fonts/Supplemental/Arial.ttf",
+			"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+			"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+		}
+		for _, font := range systemFonts {
+			if _, err := os.Stat(font); err == nil {
+				if err := r.ctx.LoadFontFace(font, size); err == nil {
+					loaded = true
+					break
+				}
+			}
+		}
+		if !loaded {
+			fmt.Printf("Warning: could not load any font at size %f, text may appear at wrong size\n", size)
+		}
 	}
 	
 	// Measure text
@@ -60,10 +95,30 @@ func (r *Renderer) renderText(cmd *receiptformat.Command) error {
 }
 
 func (r *Renderer) getFontPath(family, weight string, italic bool) string {
-	// TODO: Implement proper font loading from receipt.fonts
-	// For now, use system defaults
+	// Check if receipt has custom fonts defined
+	if r.receipt != nil && len(r.receipt.Fonts) > 0 {
+		// Fonts is a map[string]FontFamily, key is the family name
+		if fontFamily, exists := r.receipt.Fonts[family]; exists {
+			// For static fonts, check the weights array
+			if fontFamily.Type == "static" && len(fontFamily.Weights) > 0 {
+				for _, fw := range fontFamily.Weights {
+					matchesWeight := weight == "" || fw.Weight == weight
+					matchesItalic := fw.Italic == italic
+					
+					if matchesWeight && matchesItalic {
+						return fw.Path
+					}
+				}
+			}
+			
+			// For variable fonts, or if no matching weight found, use the main path
+			if fontFamily.Path != "" {
+				return fontFamily.Path
+			}
+		}
+	}
 	
-	// Try common system font paths
+	// Fallback to system fonts
 	fontPaths := []string{
 		"/System/Library/Fonts/Helvetica.ttc",
 		"/System/Library/Fonts/Supplemental/Arial.ttf",
@@ -95,22 +150,10 @@ func (r *Renderer) renderFeed(cmd *receiptformat.Command) error {
 }
 
 func (r *Renderer) renderCut(cmd *receiptformat.Command) error {
-	// Draw scissors icon or cut line
-	r.ensureHeight(40)
-	
-	// Draw dashed line to indicate cut
-	r.ctx.SetLineWidth(1)
-	dashLength := 5.0
-	x := 10.0
-	y := r.y + 20
-	
-	for x < float64(r.width)-10 {
-		r.ctx.DrawLine(x, y, x+dashLength, y)
-		r.ctx.Stroke()
-		x += dashLength * 2
-	}
-	
-	r.y += 40
+	// Just add some space before the cut - the actual cut is handled by the printer
+	// No visual divider needed
+	r.ensureHeight(20)
+	r.y += 20
 	
 	return nil
 }

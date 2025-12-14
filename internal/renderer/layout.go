@@ -1,10 +1,12 @@
 package renderer
 
 import (
-	"github.com/fogleman/gg"
-	"github.com/yourusername/receipt-engine/pkg/receiptformat"
+	"fmt"
 	"image"
 	"image/color"
+	
+	"github.com/fogleman/gg"
+	"github.com/thereceipt/receipt-engine/pkg/receiptformat"
 )
 
 func (r *Renderer) renderItem(cmd *receiptformat.Command) error {
@@ -125,14 +127,8 @@ func (r *Renderer) renderItem(cmd *receiptformat.Command) error {
 func (r *Renderer) renderBox(cmd *receiptformat.Command) error {
 	// Get box properties
 	width := r.width
-	if cmd.Width != "" && cmd.Width != "full" {
-		// Parse percentage or pixel value
-		if cmd.Width[len(cmd.Width)-1] == '%' {
-			var pct int
-			fmt.Sscanf(cmd.Width, "%d%%", &pct)
-			width = (r.width * pct) / 100
-		}
-	}
+	// Width is an int in the schema, use as-is
+	// TODO: Support percentage-based widths in schema
 	
 	border := cmd.Border
 	if border == 0 {
@@ -161,7 +157,6 @@ func (r *Renderer) renderBox(cmd *receiptformat.Command) error {
 	}
 	
 	// Render title if present
-	titleHeight := 0
 	if cmd.Title != "" {
 		titleCmd := receiptformat.Command{
 			Type:   "text",
@@ -171,7 +166,6 @@ func (r *Renderer) renderBox(cmd *receiptformat.Command) error {
 			Align:  "center",
 		}
 		contentRenderer.renderCommand(&titleCmd)
-		titleHeight = int(contentRenderer.y) + 5
 	}
 	
 	// Render nested commands

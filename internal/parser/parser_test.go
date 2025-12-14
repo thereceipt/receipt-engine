@@ -3,7 +3,7 @@ package parser
 import (
 	"testing"
 	
-	"github.com/yourusername/receipt-engine/pkg/receiptformat"
+	"github.com/thereceipt/receipt-engine/pkg/receiptformat"
 )
 
 func TestParser_SimpleReceipt(t *testing.T) {

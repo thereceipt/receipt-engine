@@ -1,0 +1,10 @@
+{
+  "usb:0483:5720": {
+    "id": "f08172d5-002f-490d-aaa2-1d1bda090199",
+    "identity_key": "usb:0483:5720",
+    "type": "usb",
+    "vid": 1155,
+    "pid": 22304,
+    "description": "USB: Printer Printer (30343833:35373230)"
+  }
+}

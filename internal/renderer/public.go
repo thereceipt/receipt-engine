@@ -1,9 +1,7 @@
 package renderer
 
 import (
-	"fmt"
-	
-	"github.com/yourusername/receipt-engine/pkg/receiptformat"
+	"github.com/thereceipt/receipt-engine/pkg/receiptformat"
 )
 
 // RenderCommand is a public wrapper for rendering a single command

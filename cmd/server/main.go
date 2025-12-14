@@ -8,8 +8,8 @@ import (
 	"syscall"
 	"time"
 	
-	"github.com/yourusername/receipt-engine/internal/api"
-	"github.com/yourusername/receipt-engine/internal/printer"
+	"github.com/thereceipt/receipt-engine/internal/api"
+	"github.com/thereceipt/receipt-engine/internal/printer"
 )
 
 func main() {
