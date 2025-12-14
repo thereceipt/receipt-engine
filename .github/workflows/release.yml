@@ -16,6 +16,7 @@ jobs:
     name: Build for ${{ matrix.os }}-${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -26,11 +27,11 @@ jobs:
             arch: arm64
             goos: linux
             goarch: arm64
-          - os: macos-latest
+          - os: macos-13
             arch: amd64
             goos: darwin
             goarch: amd64
-          - os: macos-latest
+          - os: macos-14
             arch: arm64
             goos: darwin
             goarch: arm64
@@ -46,18 +47,27 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.21'
 
       - name: Install dependencies (Linux)
         if: matrix.goos == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libusb-1.0-0-dev
+          sudo apt-get install -y libusb-1.0-0-dev gcc
 
-      - name: Install dependencies (macOS)
-        if: matrix.goos == 'darwin'
+      - name: Install dependencies (macOS Intel)
+        if: matrix.goos == 'darwin' && matrix.goarch == 'amd64'
         run: |
           brew install libusb || true
+          # Ensure we have the right toolchain
+          xcode-select --install || true
+
+      - name: Install dependencies (macOS ARM)
+        if: matrix.goos == 'darwin' && matrix.goarch == 'arm64'
+        run: |
+          brew install libusb || true
+          # For ARM64, ensure we're using native toolchain
+          arch -arm64 brew install libusb || brew install libusb || true
 
       - name: Build binary (Linux)
         if: matrix.goos == 'linux'
@@ -65,7 +75,9 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 1
+          CC: gcc
         run: |
+          set -e
           VERSION=${GITHUB_REF#refs/tags/}
           if [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF" ]; then
             VERSION="${{ github.event.inputs.version || 'dev' }}"
@@ -73,19 +85,31 @@ jobs:
           
           OUTPUT_NAME="receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}"
           
-          go build -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
+          echo "Building ${OUTPUT_NAME} with version ${VERSION}"
+          echo "GOOS=${GOOS} GOARCH=${GOARCH} CGO_ENABLED=${CGO_ENABLED}"
+          
+          go build -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
+          
+          # Verify binary was created
+          if [ ! -f "${OUTPUT_NAME}" ]; then
+            echo "Error: Binary ${OUTPUT_NAME} was not created"
+            exit 1
+          fi
+          
+          file ${OUTPUT_NAME}
+          ls -lh ${OUTPUT_NAME}
           
           echo "BINARY_PATH=${OUTPUT_NAME}" >> $GITHUB_ENV
-          echo "BINARY_NAME=${OUTPUT_NAME}" >> $GITHUB_ENV
-          echo "Built ${OUTPUT_NAME} with version ${VERSION}"
 
-      - name: Build binary (macOS)
-        if: matrix.goos == 'darwin'
+      - name: Build binary (macOS Intel)
+        if: matrix.goos == 'darwin' && matrix.goarch == 'amd64'
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 1
+          CC: clang
         run: |
+          set -e
           VERSION=${GITHUB_REF#refs/tags/}
           if [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF" ]; then
             VERSION="${{ github.event.inputs.version || 'dev' }}"
@@ -93,29 +117,98 @@ jobs:
           
           OUTPUT_NAME="receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}"
           
-          # Get libusb paths and set CGO flags
-          LIBUSB_PREFIX=$(brew --prefix libusb)
+          # Get libusb paths
+          LIBUSB_PREFIX=$(brew --prefix libusb 2>/dev/null || echo "/opt/homebrew")
+          if [ ! -d "${LIBUSB_PREFIX}/include" ]; then
+            LIBUSB_PREFIX="/usr/local"
+          fi
+          
           export CGO_CFLAGS="-I${LIBUSB_PREFIX}/include"
           export CGO_LDFLAGS="-L${LIBUSB_PREFIX}/lib -lusb-1.0"
           
-          echo "Building with libusb from: ${LIBUSB_PREFIX}"
-          echo "CGO_CFLAGS: ${CGO_CFLAGS}"
-          echo "CGO_LDFLAGS: ${CGO_LDFLAGS}"
+          echo "Building ${OUTPUT_NAME} with version ${VERSION}"
+          echo "LIBUSB_PREFIX=${LIBUSB_PREFIX}"
+          echo "CGO_CFLAGS=${CGO_CFLAGS}"
+          echo "CGO_LDFLAGS=${CGO_LDFLAGS}"
+          echo "GOOS=${GOOS} GOARCH=${GOARCH} CGO_ENABLED=${CGO_ENABLED}"
           
-          go build -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
+          # Ensure we're building for Intel
+          arch -x86_64 go build -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server || \
+          go build -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
+          
+          # Verify binary was created
+          if [ ! -f "${OUTPUT_NAME}" ]; then
+            echo "Error: Binary ${OUTPUT_NAME} was not created"
+            exit 1
+          fi
+          
+          file ${OUTPUT_NAME}
+          ls -lh ${OUTPUT_NAME}
           
           echo "BINARY_PATH=${OUTPUT_NAME}" >> $GITHUB_ENV
-          echo "BINARY_NAME=${OUTPUT_NAME}" >> $GITHUB_ENV
-          echo "Built ${OUTPUT_NAME} with version ${VERSION}"
+
+      - name: Build binary (macOS ARM)
+        if: matrix.goos == 'darwin' && matrix.goarch == 'arm64'
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 1
+          CC: clang
+        run: |
+          set -e
+          VERSION=${GITHUB_REF#refs/tags/}
+          if [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF" ]; then
+            VERSION="${{ github.event.inputs.version || 'dev' }}"
+          fi
+          
+          OUTPUT_NAME="receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}"
+          
+          # Get libusb paths (try multiple locations)
+          LIBUSB_PREFIX=$(brew --prefix libusb 2>/dev/null || echo "/opt/homebrew")
+          if [ ! -d "${LIBUSB_PREFIX}/include" ]; then
+            # Try alternative locations
+            for prefix in "/opt/homebrew" "/usr/local"; do
+              if [ -d "${prefix}/include" ] && [ -f "${prefix}/lib/libusb-1.0.dylib" ] || [ -f "${prefix}/lib/libusb-1.0.a" ]; then
+                LIBUSB_PREFIX="${prefix}"
+                break
+              fi
+            done
+          fi
+          
+          export CGO_CFLAGS="-I${LIBUSB_PREFIX}/include"
+          export CGO_LDFLAGS="-L${LIBUSB_PREFIX}/lib -lusb-1.0"
+          
+          echo "Building ${OUTPUT_NAME} with version ${VERSION}"
+          echo "LIBUSB_PREFIX=${LIBUSB_PREFIX}"
+          echo "CGO_CFLAGS=${CGO_CFLAGS}"
+          echo "CGO_LDFLAGS=${CGO_LDFLAGS}"
+          echo "GOOS=${GOOS} GOARCH=${GOARCH} CGO_ENABLED=${CGO_ENABLED}"
+          echo "CC=${CC}"
+          
+          # For ARM64, ensure we use native architecture
+          go build -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
+          
+          # Verify binary was created
+          if [ ! -f "${OUTPUT_NAME}" ]; then
+            echo "Error: Binary ${OUTPUT_NAME} was not created"
+            exit 1
+          fi
+          
+          file ${OUTPUT_NAME}
+          ls -lh ${OUTPUT_NAME}
+          
+          echo "BINARY_PATH=${OUTPUT_NAME}" >> $GITHUB_ENV
 
       - name: Build binary (Windows)
         if: matrix.goos == 'windows'
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 1
+          CGO_ENABLED: 0
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          
           $VERSION = "${{ github.ref }}".Replace("refs/tags/", "")
           if ([string]::IsNullOrEmpty($VERSION) -or $VERSION -eq "${{ github.ref }}") {
             $VERSION = "${{ github.event.inputs.version }}"
@@ -126,35 +219,28 @@ jobs:
           
           $OUTPUT_NAME = "receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}.exe"
           
-          go build -ldflags "-X main.Version=$VERSION" -o $OUTPUT_NAME ./cmd/server
+          Write-Host "Building $OUTPUT_NAME with version $VERSION"
+          Write-Host "GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0"
           
-          echo "BINARY_PATH=$OUTPUT_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "BINARY_NAME=$OUTPUT_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
-          Write-Host "Built $OUTPUT_NAME with version $VERSION"
+          go build -v -ldflags "-X main.Version=$VERSION" -o $OUTPUT_NAME ./cmd/server
+          
+          # Verify binary was created
+          if (-not (Test-Path $OUTPUT_NAME)) {
+            Write-Error "Error: Binary $OUTPUT_NAME was not created"
+            exit 1
+          }
+          
+          Get-Item $OUTPUT_NAME | Format-List
+          
+          "BINARY_PATH=$OUTPUT_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Upload artifact (Linux)
-        if: matrix.goos == 'linux'
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: ${{ env.BINARY_PATH }}
           retention-days: 30
-
-      - name: Upload artifact (macOS)
-        if: matrix.goos == 'darwin'
-        uses: actions/upload-artifact@v4
-        with:
-          name: receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}
-          retention-days: 30
-
-      - name: Upload artifact (Windows)
-        if: matrix.goos == 'windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}.exe
-          retention-days: 30
+          if-no-files-found: error
 
   release:
     name: Create Release
@@ -173,15 +259,33 @@ jobs:
           pattern: receipt-engine-*
           merge-multiple: true
 
-      - name: List downloaded artifacts
+      - name: Verify artifacts
         run: |
           echo "Downloaded artifacts:"
-          find dist -type f -name "receipt-engine-*" || ls -la dist/
+          find dist -type f -name "receipt-engine-*" | sort
+          echo ""
+          echo "Artifact details:"
+          find dist -type f -name "receipt-engine-*" -exec ls -lh {} \;
+          echo ""
+          echo "File types:"
+          find dist -type f -name "receipt-engine-*" -exec file {} \;
+          
+          # Count artifacts
+          COUNT=$(find dist -type f -name "receipt-engine-*" | wc -l)
+          echo ""
+          echo "Total artifacts: $COUNT"
+          if [ "$COUNT" -lt 5 ]; then
+            echo "Warning: Expected at least 5 artifacts, found $COUNT"
+          fi
 
       - name: Get version from tag
         id: get_version
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
+          if [ -z "$VERSION" ]; then
+            echo "Error: Could not extract version from tag"
+            exit 1
+          fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "Version: ${VERSION}"
 
@@ -214,4 +318,4 @@ jobs:
             dist/receipt-engine-*
           draft: false
           prerelease: false
-
+          fail_on_unmatched_files: false
