@@ -59,7 +59,8 @@ jobs:
         run: |
           brew install libusb || true
 
-      - name: Build binary
+      - name: Build binary (Unix)
+        if: matrix.goos != 'windows'
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -67,13 +68,10 @@ jobs:
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
           if [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF" ]; then
-            VERSION=${{ github.event.inputs.version || 'dev' }}
+            VERSION="${{ github.event.inputs.version || 'dev' }}"
           fi
           
           OUTPUT_NAME="receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}"
-          if [ "${{ matrix.goos }}" = "windows" ]; then
-            OUTPUT_NAME="$OUTPUT_NAME.exe"
-          fi
           
           go build -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
           
@@ -81,11 +79,44 @@ jobs:
           echo "BINARY_NAME=${OUTPUT_NAME}" >> $GITHUB_ENV
           echo "Built ${OUTPUT_NAME} with version ${VERSION}"
 
-      - name: Upload artifact
+      - name: Build binary (Windows)
+        if: matrix.goos == 'windows'
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 1
+        shell: pwsh
+        run: |
+          $VERSION = "${{ github.ref }}".Replace("refs/tags/", "")
+          if ([string]::IsNullOrEmpty($VERSION) -or $VERSION -eq "${{ github.ref }}") {
+            $VERSION = "${{ github.event.inputs.version }}"
+            if ([string]::IsNullOrEmpty($VERSION)) {
+              $VERSION = "dev"
+            }
+          }
+          
+          $OUTPUT_NAME = "receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}.exe"
+          
+          go build -ldflags "-X main.Version=$VERSION" -o $OUTPUT_NAME ./cmd/server
+          
+          echo "BINARY_PATH=$OUTPUT_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "BINARY_NAME=$OUTPUT_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Built $OUTPUT_NAME with version $VERSION"
+
+      - name: Upload artifact (Unix)
+        if: matrix.goos != 'windows'
         uses: actions/upload-artifact@v4
         with:
           name: receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: ${{ env.BINARY_PATH }}
+          path: receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}
+          retention-days: 30
+
+      - name: Upload artifact (Windows)
+        if: matrix.goos == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}.exe
           retention-days: 30
 
   release:
@@ -103,7 +134,12 @@ jobs:
         with:
           path: dist
           pattern: receipt-engine-*
-          merge-multiple: false
+          merge-multiple: true
+
+      - name: List downloaded artifacts
+        run: |
+          echo "Downloaded artifacts:"
+          find dist -type f -name "receipt-engine-*" || ls -la dist/
 
       - name: Get version from tag
         id: get_version
@@ -138,7 +174,6 @@ jobs:
             
             The server will start on `http://localhost:12212`
           files: |
-            dist/*/receipt-engine-*
             dist/receipt-engine-*
           draft: false
           prerelease: false
