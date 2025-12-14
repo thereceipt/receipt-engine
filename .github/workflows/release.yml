@@ -59,8 +59,8 @@ jobs:
         run: |
           brew install libusb || true
 
-      - name: Build binary (Unix)
-        if: matrix.goos != 'windows'
+      - name: Build binary (Linux)
+        if: matrix.goos == 'linux'
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -72,6 +72,35 @@ jobs:
           fi
           
           OUTPUT_NAME="receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}"
+          
+          go build -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
+          
+          echo "BINARY_PATH=${OUTPUT_NAME}" >> $GITHUB_ENV
+          echo "BINARY_NAME=${OUTPUT_NAME}" >> $GITHUB_ENV
+          echo "Built ${OUTPUT_NAME} with version ${VERSION}"
+
+      - name: Build binary (macOS)
+        if: matrix.goos == 'darwin'
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 1
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          if [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF" ]; then
+            VERSION="${{ github.event.inputs.version || 'dev' }}"
+          fi
+          
+          OUTPUT_NAME="receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}"
+          
+          # Get libusb paths and set CGO flags
+          LIBUSB_PREFIX=$(brew --prefix libusb)
+          export CGO_CFLAGS="-I${LIBUSB_PREFIX}/include"
+          export CGO_LDFLAGS="-L${LIBUSB_PREFIX}/lib -lusb-1.0"
+          
+          echo "Building with libusb from: ${LIBUSB_PREFIX}"
+          echo "CGO_CFLAGS: ${CGO_CFLAGS}"
+          echo "CGO_LDFLAGS: ${CGO_LDFLAGS}"
           
           go build -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
           
@@ -103,8 +132,16 @@ jobs:
           echo "BINARY_NAME=$OUTPUT_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "Built $OUTPUT_NAME with version $VERSION"
 
-      - name: Upload artifact (Unix)
-        if: matrix.goos != 'windows'
+      - name: Upload artifact (Linux)
+        if: matrix.goos == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}
+          retention-days: 30
+
+      - name: Upload artifact (macOS)
+        if: matrix.goos == 'darwin'
         uses: actions/upload-artifact@v4
         with:
           name: receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}
