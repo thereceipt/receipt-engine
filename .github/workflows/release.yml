@@ -199,12 +199,92 @@ jobs:
           
           echo "BINARY_PATH=${OUTPUT_NAME}" >> $GITHUB_ENV
 
+      - name: Install dependencies (Windows)
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: |
+          # Install TDM-GCC via chocolatey (usually available on Windows runners)
+          Write-Host "Setting up C compiler for Windows..."
+          
+          # Check if chocolatey is available
+          if (Get-Command choco -ErrorAction SilentlyContinue) {
+            Write-Host "Installing TDM-GCC via chocolatey..."
+            choco install tdm-gcc -y --no-progress
+            $env:PATH = "C:\TDM-GCC-64\bin;$env:PATH"
+          } else {
+            Write-Host "Chocolatey not available, checking for existing gcc..."
+            # Check common locations
+            $gccPaths = @(
+              "C:\TDM-GCC-64\bin\gcc.exe",
+              "C:\mingw64\bin\gcc.exe",
+              "C:\msys64\mingw64\bin\gcc.exe"
+            )
+            $found = $false
+            foreach ($path in $gccPaths) {
+              if (Test-Path $path) {
+                $gccDir = Split-Path $path
+                $env:PATH = "$gccDir;$env:PATH"
+                Write-Host "Found gcc at: $path"
+                $found = $true
+                break
+              }
+            }
+            if (-not $found) {
+              Write-Host "Warning: No gcc found. CGO build may fail."
+            }
+          }
+          
+          # Verify gcc is available
+          if (Get-Command gcc -ErrorAction SilentlyContinue) {
+            Write-Host "gcc version:"
+            gcc --version
+          } else {
+            Write-Host "ERROR: gcc not found after setup"
+            exit 1
+          }
+          
+          # Download and extract libusb for Windows
+          $libusbDir = "$env:TEMP\libusb"
+          New-Item -ItemType Directory -Force -Path "$libusbDir\include" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$libusbDir\lib" | Out-Null
+          
+          if (-not (Test-Path "$libusbDir\lib\libusb-1.0.lib")) {
+            Write-Host "Downloading libusb for Windows..."
+            $libusbUrl = "https://github.com/libusb/libusb/releases/download/v1.0.27/libusb-1.0.27-binaries.7z"
+            $libusbZip = "$env:TEMP\libusb.7z"
+            
+            try {
+              Invoke-WebRequest -Uri $libusbUrl -OutFile $libusbZip -ErrorAction Stop
+              Write-Host "Downloaded libusb"
+              
+              # Extract using 7z (usually available on Windows runners)
+              if (Get-Command 7z -ErrorAction SilentlyContinue) {
+                7z x $libusbZip -o"$env:TEMP" -y
+                # Move files to expected structure
+                $extracted = Get-ChildItem "$env:TEMP" -Filter "libusb-1.0.27" -Directory | Select-Object -First 1
+                if ($extracted) {
+                  Copy-Item "$($extracted.FullName)\MS64\dll\*" -Destination "$libusbDir\lib\" -Force
+                  Copy-Item "$($extracted.FullName)\MS64\include\*" -Destination "$libusbDir\include\" -Force
+                  Write-Host "Extracted libusb to $libusbDir"
+                }
+              } else {
+                Write-Host "Warning: 7z not available, cannot extract libusb"
+              }
+            } catch {
+              Write-Host "Warning: Could not download libusb: $_"
+              Write-Host "Build will continue but USB support may not work"
+            }
+          } else {
+            Write-Host "libusb already available at $libusbDir"
+          }
+
       - name: Build binary (Windows)
         if: matrix.goos == 'windows'
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
+          CGO_ENABLED: 1
+          CC: gcc
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -220,9 +300,36 @@ jobs:
           $OUTPUT_NAME = "receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}.exe"
           
           Write-Host "Building $OUTPUT_NAME with version $VERSION"
-          Write-Host "GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0"
+          Write-Host "GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=1"
           
+          # Verify gcc is available
+          if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
+            Write-Error "ERROR: gcc not found. Cannot build with CGO."
+            exit 1
+          }
+          Write-Host "Using gcc: $(Get-Command gcc | Select-Object -ExpandProperty Source)"
+          
+          # Set up libusb paths if available
+          $libusbDir = "$env:TEMP\libusb"
+          if (Test-Path "$libusbDir\lib\libusb-1.0.lib") {
+            $env:CGO_CFLAGS = "-I$libusbDir\include"
+            $env:CGO_LDFLAGS = "-L$libusbDir\lib -lusb-1.0"
+            Write-Host "Using libusb from: $libusbDir"
+            Write-Host "CGO_CFLAGS: $env:CGO_CFLAGS"
+            Write-Host "CGO_LDFLAGS: $env:CGO_LDFLAGS"
+          } else {
+            Write-Host "Warning: libusb not found at $libusbDir"
+            Write-Host "Attempting build without explicit libusb paths (may use system paths)"
+          }
+          
+          # Build with CGO
+          Write-Host "Starting build..."
           go build -v -ldflags "-X main.Version=$VERSION" -o $OUTPUT_NAME ./cmd/server
+          
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Build failed with exit code $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
           
           # Verify binary was created
           if (-not (Test-Path $OUTPUT_NAME)) {
@@ -230,6 +337,7 @@ jobs:
             exit 1
           }
           
+          Write-Host "Build successful!"
           Get-Item $OUTPUT_NAME | Format-List
           
           "BINARY_PATH=$OUTPUT_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
