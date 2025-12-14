@@ -12,10 +12,16 @@ import (
 	"github.com/thereceipt/receipt-engine/internal/printer"
 )
 
+// Version is set during build via ldflags
+var Version = "dev"
+
 func main() {
 	port := getPort()
 	
 	fmt.Printf("🖨️  Receipt Engine Server\n")
+	if Version != "dev" {
+		fmt.Printf("Version: %s\n", Version)
+	}
 	fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 	
 	// Initialize printer manager
