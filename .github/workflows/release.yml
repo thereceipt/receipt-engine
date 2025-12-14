@@ -27,7 +27,7 @@ jobs:
             arch: arm64
             goos: linux
             goarch: arm64
-          - os: macos-13
+          - os: macos-14
             arch: amd64
             goos: darwin
             goarch: amd64
@@ -208,9 +208,9 @@ jobs:
           
           # Check if chocolatey is available
           if (Get-Command choco -ErrorAction SilentlyContinue) {
-            Write-Host "Installing TDM-GCC via chocolatey..."
-            choco install tdm-gcc -y --no-progress
-            $env:PATH = "C:\TDM-GCC-64\bin;$env:PATH"
+            Write-Host "Installing build tools via chocolatey..."
+            choco install tdm-gcc pkgconfiglite -y --no-progress
+            $env:PATH = "C:\TDM-GCC-64\bin;C:\ProgramData\chocolatey\bin;$env:PATH"
           } else {
             Write-Host "Chocolatey not available, checking for existing gcc..."
             # Check common locations
@@ -245,8 +245,10 @@ jobs:
           
           # Download and extract libusb for Windows
           $libusbDir = "$env:TEMP\libusb"
+          $pkgConfigDir = "$libusbDir\lib\pkgconfig"
           New-Item -ItemType Directory -Force -Path "$libusbDir\include" | Out-Null
           New-Item -ItemType Directory -Force -Path "$libusbDir\lib" | Out-Null
+          New-Item -ItemType Directory -Force -Path $pkgConfigDir | Out-Null
           
           if (-not (Test-Path "$libusbDir\lib\libusb-1.0.lib")) {
             Write-Host "Downloading libusb for Windows..."
@@ -276,6 +278,33 @@ jobs:
             }
           } else {
             Write-Host "libusb already available at $libusbDir"
+          }
+          
+          # Create pkg-config file for libusb (required by gousb)
+          if (Test-Path "$libusbDir\lib\libusb-1.0.lib") {
+            # Convert Windows path to Unix-style for pkg-config
+            $libusbDirUnix = $libusbDir -replace '\\', '/'
+            $pcContent = @"
+prefix=$libusbDirUnix
+exec_prefix=`${prefix}
+libdir=`${exec_prefix}/lib
+includedir=`${prefix}/include
+
+Name: libusb-1.0
+Description: C API for USB device access from Linux, macOS, Windows, and OpenBSD/NetBSD userspace
+Version: 1.0.27
+Libs: -L`${libdir} -lusb-1.0
+Cflags: -I`${includedir}/libusb-1.0
+"@
+            $pcContent | Out-File -FilePath "$pkgConfigDir\libusb-1.0.pc" -Encoding ASCII -NoNewline
+            Write-Host "Created pkg-config file at $pkgConfigDir\libusb-1.0.pc"
+            Write-Host "File contents:"
+            Get-Content "$pkgConfigDir\libusb-1.0.pc"
+            
+            # Set PKG_CONFIG_PATH so pkg-config can find it (use forward slashes)
+            $pkgConfigPathUnix = $pkgConfigDir -replace '\\', '/'
+            $env:PKG_CONFIG_PATH = "$pkgConfigPathUnix;$env:PKG_CONFIG_PATH"
+            Write-Host "Set PKG_CONFIG_PATH to: $env:PKG_CONFIG_PATH"
           }
 
       - name: Build binary (Windows)
@@ -309,21 +338,52 @@ jobs:
           }
           Write-Host "Using gcc: $(Get-Command gcc | Select-Object -ExpandProperty Source)"
           
-          # Set up libusb paths if available
+          # Verify pkg-config can find libusb
           $libusbDir = "$env:TEMP\libusb"
           if (Test-Path "$libusbDir\lib\libusb-1.0.lib") {
-            $env:CGO_CFLAGS = "-I$libusbDir\include"
-            $env:CGO_LDFLAGS = "-L$libusbDir\lib -lusb-1.0"
+            Write-Host "Verifying pkg-config setup..."
+            $pkgConfigPath = "$libusbDir\lib\pkgconfig"
+            $env:PKG_CONFIG_PATH = "$pkgConfigPath;$env:PKG_CONFIG_PATH"
+            
+            # Try to find pkg-config
+            $pkgConfig = $null
+            $pkgConfigPaths = @(
+              "pkg-config",
+              "pkg-config.exe",
+              "C:\ProgramData\chocolatey\bin\pkg-config.exe",
+              "C:\Strawberry\c\bin\pkg-config.exe"
+            )
+            
+            foreach ($path in $pkgConfigPaths) {
+              if (Get-Command $path -ErrorAction SilentlyContinue) {
+                $pkgConfig = $path
+                break
+              }
+            }
+            
+            if ($pkgConfig) {
+              Write-Host "Found pkg-config at: $pkgConfig"
+              & $pkgConfig --modversion libusb-1.0
+              if ($LASTEXITCODE -eq 0) {
+                Write-Host "pkg-config successfully found libusb-1.0"
+              } else {
+                Write-Host "Warning: pkg-config could not find libusb-1.0, but continuing..."
+                Write-Host "PKG_CONFIG_PATH: $env:PKG_CONFIG_PATH"
+              }
+            } else {
+              Write-Host "Warning: pkg-config not found, but continuing with direct CGO flags..."
+            }
+            
             Write-Host "Using libusb from: $libusbDir"
-            Write-Host "CGO_CFLAGS: $env:CGO_CFLAGS"
-            Write-Host "CGO_LDFLAGS: $env:CGO_LDFLAGS"
           } else {
             Write-Host "Warning: libusb not found at $libusbDir"
-            Write-Host "Attempting build without explicit libusb paths (may use system paths)"
           }
           
           # Build with CGO
           Write-Host "Starting build..."
+          Write-Host "GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=1"
+          Write-Host "PKG_CONFIG_PATH=$env:PKG_CONFIG_PATH"
+          
           go build -v -ldflags "-X main.Version=$VERSION" -o $OUTPUT_NAME ./cmd/server
           
           if ($LASTEXITCODE -ne 0) {
