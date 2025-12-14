@@ -1,0 +1,44 @@
+# Binaries
+receipt-engine
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# Dependencies
+vendor/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Compiled Object files
+*.o
+*.a
+
+# Build artifacts
+dist/
+build/
+
+# Debugging
+debug
+__debug_bin
+
+# Environment
+.env
+.env.local
