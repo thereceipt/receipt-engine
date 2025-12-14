@@ -88,23 +88,40 @@ func (c *WSClient) handlePrintEvent(data map[string]interface{}) {
 		return
 	}
 	
-	// Extract receipt
-	receiptData, ok := data["receipt"]
-	if !ok {
-		c.sendError("receipt is required")
-		return
-	}
+	// Load receipt from path/URL if provided, otherwise use direct receipt
+	var receipt *receiptformat.Receipt
+	var err error
 	
-	// Convert to Receipt struct
-	receiptBytes, _ := json.Marshal(receiptData)
-	var receipt receiptformat.Receipt
-	if err := json.Unmarshal(receiptBytes, &receipt); err != nil {
-		c.sendError(fmt.Sprintf("invalid receipt: %v", err))
+	// Check for receipt_url first
+	if receiptURL, ok := data["receipt_url"].(string); ok && receiptURL != "" {
+		receipt, err = loadReceiptFromPathOrURL(receiptURL)
+		if err != nil {
+			c.sendError(fmt.Sprintf("failed to load receipt from URL: %v", err))
+			return
+		}
+	} else if receiptPath, ok := data["receipt_path"].(string); ok && receiptPath != "" {
+		// Check for receipt_path
+		receipt, err = loadReceiptFromPathOrURL(receiptPath)
+		if err != nil {
+			c.sendError(fmt.Sprintf("failed to load receipt from path: %v", err))
+			return
+		}
+	} else if receiptData, ok := data["receipt"]; ok {
+		// Use direct receipt JSON
+		receiptBytes, _ := json.Marshal(receiptData)
+		var receiptObj receiptformat.Receipt
+		if err := json.Unmarshal(receiptBytes, &receiptObj); err != nil {
+			c.sendError(fmt.Sprintf("invalid receipt: %v", err))
+			return
+		}
+		receipt = &receiptObj
+	} else {
+		c.sendError("receipt, receipt_path, or receipt_url is required")
 		return
 	}
 	
 	// Validate
-	if err := receiptformat.Validate(&receipt); err != nil {
+	if err := receiptformat.Validate(receipt); err != nil {
 		c.sendError(fmt.Sprintf("receipt validation failed: %v", err))
 		return
 	}
@@ -140,7 +157,7 @@ func (c *WSClient) handlePrintEvent(data map[string]interface{}) {
 		paperWidth = "80mm"
 	}
 	
-	p, err := parser.New(&receipt, paperWidth)
+	p, err := parser.New(receipt, paperWidth)
 	if err != nil {
 		c.sendError(fmt.Sprintf("failed to create parser: %v", err))
 		return

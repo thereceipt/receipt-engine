@@ -3,7 +3,10 @@ package api
 
 import (
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"strings"
 	
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -97,11 +100,52 @@ func (s *Server) handleSetPrinterName(c *gin.Context) {
 	c.JSON(200, gin.H{"success": true})
 }
 
+// loadReceiptFromPathOrURL loads a receipt from a file path or URL
+func loadReceiptFromPathOrURL(pathOrURL string) (*receiptformat.Receipt, error) {
+	var data []byte
+	var err error
+	
+	// Check if it's a URL (starts with http:// or https://)
+	if strings.HasPrefix(pathOrURL, "http://") || strings.HasPrefix(pathOrURL, "https://") {
+		// Fetch from URL
+		resp, err := http.Get(pathOrURL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch receipt from URL: %w", err)
+		}
+		defer resp.Body.Close()
+		
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("failed to fetch receipt: HTTP %d", resp.StatusCode)
+		}
+		
+		data, err = io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read receipt from URL: %w", err)
+		}
+	} else {
+		// Read from local file path
+		data, err = os.ReadFile(pathOrURL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read receipt file: %w", err)
+		}
+	}
+	
+	// Parse the receipt
+	receipt, err := receiptformat.Parse(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse receipt: %w", err)
+	}
+	
+	return receipt, nil
+}
+
 // handlePrint handles a print request
 func (s *Server) handlePrint(c *gin.Context) {
 	var req struct {
 		PrinterID         string                            `json:"printer_id" binding:"required"`
 		Receipt           *receiptformat.Receipt            `json:"receipt"`
+		ReceiptPath       string                            `json:"receipt_path"`
+		ReceiptURL        string                            `json:"receipt_url"`
 		VariableData      map[string]interface{}            `json:"variableData"`
 		VariableArrayData map[string][]map[string]interface{} `json:"variableArrayData"`
 	}
@@ -111,19 +155,42 @@ func (s *Server) handlePrint(c *gin.Context) {
 		return
 	}
 	
+	// Load receipt from path/URL if provided, otherwise use direct receipt
+	var receipt *receiptformat.Receipt
+	var err error
+	
+	if req.ReceiptURL != "" {
+		receipt, err = loadReceiptFromPathOrURL(req.ReceiptURL)
+		if err != nil {
+			c.JSON(400, gin.H{"error": fmt.Sprintf("failed to load receipt from URL: %v", err)})
+			return
+		}
+	} else if req.ReceiptPath != "" {
+		receipt, err = loadReceiptFromPathOrURL(req.ReceiptPath)
+		if err != nil {
+			c.JSON(400, gin.H{"error": fmt.Sprintf("failed to load receipt from path: %v", err)})
+			return
+		}
+	} else if req.Receipt != nil {
+		receipt = req.Receipt
+	} else {
+		c.JSON(400, gin.H{"error": "receipt, receipt_path, or receipt_url is required"})
+		return
+	}
+	
 	// Validate receipt
-	if err := receiptformat.Validate(req.Receipt); err != nil {
+	if err := receiptformat.Validate(receipt); err != nil {
 		c.JSON(400, gin.H{"error": fmt.Sprintf("invalid receipt: %v", err)})
 		return
 	}
 	
 	// Create parser
-	paperWidth := req.Receipt.PaperWidth
+	paperWidth := receipt.PaperWidth
 	if paperWidth == "" {
 		paperWidth = "80mm"
 	}
 	
-	p, err := parser.New(req.Receipt, paperWidth)
+	p, err := parser.New(receipt, paperWidth)
 	if err != nil {
 		c.JSON(500, gin.H{"error": fmt.Sprintf("failed to create parser: %v", err)})
 		return

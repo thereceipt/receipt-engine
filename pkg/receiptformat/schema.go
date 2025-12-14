@@ -8,7 +8,6 @@ type Receipt struct {
 	Description    string                    `json:"description,omitempty"`
 	CreatedWith    string                    `json:"created_with,omitempty"`
 	PaperWidth     string                    `json:"paper_width,omitempty"` // "58mm", "80mm", "112mm"
-	Font           string                    `json:"font,omitempty"`         // Legacy
 	Fonts          map[string]FontFamily     `json:"fonts,omitempty"`
 	Variables      []Variable                `json:"variables,omitempty"`
 	VariableArrays []VariableArray           `json:"variableArrays,omitempty"`

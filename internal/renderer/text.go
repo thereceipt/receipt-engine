@@ -34,7 +34,12 @@ func (r *Renderer) renderText(cmd *receiptformat.Command) error {
 	}
 	
 	// Load font with the specified size
-	fontPath := r.getFontPath(cmd.FontFamily, weight, cmd.Italic)
+	// If no font_family is specified, use "default"
+	fontFamily := cmd.FontFamily
+	if fontFamily == "" {
+		fontFamily = "default"
+	}
+	fontPath := r.getFontPath(fontFamily, weight, cmd.Italic)
 	
 	// Always try to load a font with the specified size
 	// If the preferred font fails, fall back to system fonts
@@ -95,6 +100,11 @@ func (r *Renderer) renderText(cmd *receiptformat.Command) error {
 }
 
 func (r *Renderer) getFontPath(family, weight string, italic bool) string {
+	// Normalize weight - convert "normal" to "regular" for matching
+	if weight == "normal" {
+		weight = "regular"
+	}
+	
 	// Check if receipt has custom fonts defined
 	if r.receipt != nil && len(r.receipt.Fonts) > 0 {
 		// Fonts is a map[string]FontFamily, key is the family name
