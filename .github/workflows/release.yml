@@ -54,35 +54,24 @@ jobs:
         run: |
           sudo apt-get update
           if [ "${{ matrix.goarch }}" == "arm64" ]; then
-            # For ARM64 cross-compilation, install cross-compiler and binutils
-            sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu
-            # Also install native gcc for Go's build tools
-            sudo apt-get install -y gcc
-            # Enable multiarch and install ARM64 libusb libraries
-            sudo dpkg --add-architecture arm64 || true
-            sudo apt-get update || true
-            # Try to install ARM64 libusb via multiarch (may not work on all systems)
-            sudo apt-get install -y libusb-1.0-0-dev:arm64 || {
-              echo "Multiarch install failed, will try manual download..."
-              # Fallback: download and extract manually
-              mkdir -p /tmp/arm64-libusb/usr
-              cd /tmp/arm64-libusb
-              # Try to download ARM64 packages
-              for url in \
-                "http://ports.ubuntu.com/ubuntu-ports/pool/main/libu/libusb-1.0/libusb-1.0-0_1.0.27-2_arm64.deb" \
-                "http://archive.ubuntu.com/ubuntu/pool/main/libu/libusb-1.0/libusb-1.0-0_1.0.27-2_arm64.deb"; do
-                wget -q "$url" -O libusb-0.deb && break || true
-              done
-              for url in \
-                "http://ports.ubuntu.com/ubuntu-ports/pool/main/libu/libusb-1.0/libusb-1.0-dev_1.0.27-2_arm64.deb" \
-                "http://archive.ubuntu.com/ubuntu/pool/main/libu/libusb-1.0/libusb-1.0-dev_1.0.27-2_arm64.deb"; do
-                wget -q "$url" -O libusb-dev.deb && break || true
-              done
-              # Extract if downloaded
-              for deb in *.deb 2>/dev/null; do
-                [ -f "$deb" ] && dpkg-deb -x "$deb" . || true
-              done
-            }
+            # Install cross-compiler tools
+            sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc
+            # Download and extract ARM64 libusb libraries
+            mkdir -p /tmp/arm64-libusb
+            cd /tmp/arm64-libusb
+            # Try to download ARM64 libusb packages (try multiple versions)
+            for version in "1.0.27-2" "1.0.27-1" "1.0.24-2"; do
+              wget -q "http://ports.ubuntu.com/ubuntu-ports/pool/main/libu/libusb-1.0/libusb-1.0-0_${version}_arm64.deb" -O libusb-0.deb && break || \
+              wget -q "http://archive.ubuntu.com/ubuntu/pool/main/libu/libusb-1.0/libusb-1.0-0_${version}_arm64.deb" -O libusb-0.deb && break || true
+            done
+            for version in "1.0.27-2" "1.0.27-1" "1.0.24-2"; do
+              wget -q "http://ports.ubuntu.com/ubuntu-ports/pool/main/libu/libusb-1.0/libusb-1.0-dev_${version}_arm64.deb" -O libusb-dev.deb && break || \
+              wget -q "http://archive.ubuntu.com/ubuntu/pool/main/libu/libusb-1.0/libusb-1.0-dev_${version}_arm64.deb" -O libusb-dev.deb && break || true
+            done
+            # Extract packages
+            for deb in *.deb; do
+              [ -f "$deb" ] && dpkg-deb -x "$deb" . 2>/dev/null || true
+            done
           else
             sudo apt-get install -y libusb-1.0-0-dev gcc
           fi
@@ -110,6 +99,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 1
+          CC: gcc
         run: |
           set -e
           VERSION=${GITHUB_REF#refs/tags/}
@@ -132,16 +122,12 @@ jobs:
               export CGO_CFLAGS="-I/usr/include/aarch64-linux-gnu"
               export CGO_LDFLAGS="-L/usr/lib/aarch64-linux-gnu -lusb-1.0"
             fi
-          else
-            export CC=gcc
+            echo "CGO_CFLAGS=${CGO_CFLAGS}"
+            echo "CGO_LDFLAGS=${CGO_LDFLAGS}"
           fi
           
           echo "Building ${OUTPUT_NAME} with version ${VERSION}"
           echo "GOOS=${GOOS} GOARCH=${GOARCH} CGO_ENABLED=${CGO_ENABLED} CC=${CC}"
-          if [ "${{ matrix.goarch }}" == "arm64" ]; then
-            echo "CGO_CFLAGS=${CGO_CFLAGS}"
-            echo "CGO_LDFLAGS=${CGO_LDFLAGS}"
-          fi
           
           go build -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
           
@@ -172,35 +158,21 @@ jobs:
           
           OUTPUT_NAME="receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}"
           
-          # For x86_64 builds on ARM64 runners, we need x86_64 libusb
-          # This is complex, so we'll use the system libusb and hope Go can cross-compile
-          # Note: This may not work perfectly, but it's the best we can do without x86_64 libusb
+          # Install libusb if needed
+          brew install libusb || true
           LIBUSB_PREFIX=$(brew --prefix libusb 2>/dev/null || echo "/opt/homebrew")
-          if [ ! -d "${LIBUSB_PREFIX}/include" ]; then
-            brew install libusb || true
-            LIBUSB_PREFIX=$(brew --prefix libusb 2>/dev/null || echo "/opt/homebrew")
-          fi
           
-          # Even if it's ARM64 libusb, we'll try - Go's linker might handle it
-          # or the build might fail, which is acceptable for this cross-compilation scenario
           export CGO_CFLAGS="-I${LIBUSB_PREFIX}/include"
           export CGO_LDFLAGS="-L${LIBUSB_PREFIX}/lib -lusb-1.0"
           
           echo "Building ${OUTPUT_NAME} with version ${VERSION}"
-          echo "LIBUSB_PREFIX=${LIBUSB_PREFIX}"
           echo "CGO_CFLAGS=${CGO_CFLAGS}"
           echo "CGO_LDFLAGS=${CGO_LDFLAGS}"
           echo "GOOS=${GOOS} GOARCH=${GOARCH} CGO_ENABLED=${CGO_ENABLED}"
-          echo "Note: Building x86_64 on ARM64 runner - libusb linking may have issues"
           
-          # Use Go's native cross-compilation
-          # The linker will try to link, but may fail if libusb arch doesn't match
-          # This is a known limitation of cross-compiling CGO on macOS
-          go build -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server || {
-            echo "Build failed - this is expected when cross-compiling x86_64 on ARM64 with CGO"
-            echo "Consider using an x86_64 runner or disabling CGO for this build"
-            exit 1
-          }
+          # Note: Cross-compiling x86_64 on ARM64 runner with CGO is problematic
+          # The linker may fail if libusb architecture doesn't match target
+          go build -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
           
           # Verify binary was created
           if [ ! -f "${OUTPUT_NAME}" ]; then
@@ -393,54 +365,21 @@ jobs:
           }
           Write-Host "Using gcc: $(Get-Command gcc | Select-Object -ExpandProperty Source)"
           
-          # Set up CGO flags and pkg-config for libusb
+          # Set up CGO flags for libusb (bypass pkg-config)
           $libusbDir = "$env:TEMP\libusb"
           if (Test-Path "$libusbDir\lib\libusb-1.0.lib") {
             Write-Host "Using libusb from: $libusbDir"
-            # Convert Windows path to forward slashes for CGO
             $libusbDirUnix = $libusbDir -replace '\\', '/'
             $env:CGO_CFLAGS = "-I$libusbDirUnix/include"
             $env:CGO_LDFLAGS = "-L$libusbDirUnix/lib -lusb-1.0"
-            
-            # Set PKG_CONFIG_PATH so pkg-config can find libusb
-            $pkgConfigDir = "$libusbDir\lib\pkgconfig"
-            $pkgConfigPathUnix = $pkgConfigDir -replace '\\', '/'
-            $env:PKG_CONFIG_PATH = "$pkgConfigPathUnix"
-            
             Write-Host "CGO_CFLAGS: $env:CGO_CFLAGS"
             Write-Host "CGO_LDFLAGS: $env:CGO_LDFLAGS"
-            Write-Host "PKG_CONFIG_PATH: $env:PKG_CONFIG_PATH"
-            
-            # Verify pkg-config can find it
-            $pkgConfig = $null
-            $pkgConfigPaths = @("pkg-config", "pkg-config.exe", "C:\ProgramData\chocolatey\bin\pkg-config.exe")
-            foreach ($path in $pkgConfigPaths) {
-              if (Get-Command $path -ErrorAction SilentlyContinue) {
-                $pkgConfig = $path
-                break
-              }
-            }
-            if ($pkgConfig) {
-              Write-Host "Testing pkg-config..."
-              & $pkgConfig --cflags --libs libusb-1.0 2>&1 | Write-Host
-            }
           } else {
-            Write-Host "Warning: libusb not found at $libusbDir, build may fail"
+            Write-Error "libusb not found at $libusbDir"
+            exit 1
           }
           
-          # Build with CGO
-          Write-Host "Starting build..."
-          Write-Host "GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=1"
-          if ($env:CGO_CFLAGS) {
-            Write-Host "CGO_CFLAGS: $env:CGO_CFLAGS"
-          }
-          if ($env:CGO_LDFLAGS) {
-            Write-Host "CGO_LDFLAGS: $env:CGO_LDFLAGS"
-          }
-          if ($env:PKG_CONFIG_PATH) {
-            Write-Host "PKG_CONFIG_PATH: $env:PKG_CONFIG_PATH"
-          }
-          
+          Write-Host "Building with CGO..."
           go build -v -ldflags "-X main.Version=$VERSION" -o $OUTPUT_NAME ./cmd/server
           
           if ($LASTEXITCODE -ne 0) {
