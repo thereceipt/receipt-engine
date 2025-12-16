@@ -102,9 +102,10 @@ jobs:
               -v "$PWD":/src -w /src \
               -e VERSION="${VERSION}" \
               golang:1.21-bookworm \
-              bash -lc "apt-get update && apt-get install -y libusb-1.0-0-dev gcc pkg-config && \
-                        OUTPUT_NAME='${OUTPUT_NAME}' && \
-                        go build -v -ldflags \"-X main.Version=\$VERSION\" -o \"\$OUTPUT_NAME\" ./cmd/server"
+              bash -c "set -e; export PATH=/usr/local/go/bin:\$PATH; \
+                       apt-get update && apt-get install -y libusb-1.0-0-dev gcc pkg-config; \
+                       OUTPUT_NAME='${OUTPUT_NAME}'; \
+                       /usr/local/go/bin/go build -v -ldflags \"-X main.Version=\$VERSION\" -o \"\$OUTPUT_NAME\" ./cmd/server"
           else
             go build -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
           fi
@@ -353,17 +354,64 @@ jobs:
           }
           Write-Host "Using gcc: $(Get-Command gcc | Select-Object -ExpandProperty Source)"
 
-          # Optional: set CGO flags (pkg-config is still required by gousb)
+          # Ensure libusb is present and pkg-config can find it (don't rely on previous steps)
           $libusbDir = "$env:TEMP\libusb"
-          if (Test-Path "$libusbDir\include\libusb-1.0") {
-            $env:CGO_CFLAGS = "-I$libusbDir/include"
-            $env:CGO_LDFLAGS = "-L$libusbDir/lib -lusb-1.0"
+          $pkgConfigDir = "$libusbDir\lib\pkgconfig"
+          New-Item -ItemType Directory -Force -Path "$libusbDir\include" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$libusbDir\lib" | Out-Null
+          New-Item -ItemType Directory -Force -Path $pkgConfigDir | Out-Null
+
+          if (-not (Test-Path "$libusbDir\lib\libusb-1.0.lib")) {
+            Write-Host "Downloading libusb for Windows..."
+            $libusbUrl = "https://github.com/libusb/libusb/releases/download/v1.0.27/libusb-1.0.27-binaries.7z"
+            $libusbZip = "$env:TEMP\libusb.7z"
+            Invoke-WebRequest -Uri $libusbUrl -OutFile $libusbZip -ErrorAction Stop
+
+            if (-not (Get-Command 7z -ErrorAction SilentlyContinue)) {
+              Write-Error "7z not found, cannot extract libusb archive"
+              exit 1
+            }
+
+            7z x $libusbZip -o"$env:TEMP" -y | Out-Null
+            $extracted = Get-ChildItem "$env:TEMP" -Filter "libusb-1.0.27" -Directory | Select-Object -First 1
+            if (-not $extracted) {
+              Write-Error "Could not find extracted libusb directory"
+              exit 1
+            }
+
+            Copy-Item "$($extracted.FullName)\MS64\dll\*" -Destination "$libusbDir\lib\" -Force
+            Copy-Item "$($extracted.FullName)\MS64\include\*" -Destination "$libusbDir\include\" -Force
           }
-          
-          # Ensure PKG_CONFIG_PATH is set (don’t rely on previous step env propagation)
-          if (-not $env:PKG_CONFIG_PATH) {
-            $env:PKG_CONFIG_PATH = ("$libusbDir\lib\pkgconfig" -replace '\\','/')
+
+          if (-not (Test-Path "$libusbDir\lib\libusb-1.0.lib")) {
+            Write-Error "libusb import library not found at $libusbDir\lib\libusb-1.0.lib"
+            Get-ChildItem -Force "$libusbDir\lib" | Format-Table -AutoSize
+            exit 1
           }
+
+          # Generate libusb-1.0.pc for pkg-config (gousb uses pkg-config on Windows)
+          $libusbDirUnix = $libusbDir -replace '\\', '/'
+          $pcLines = @(
+            "prefix=$libusbDirUnix",
+            'exec_prefix=${prefix}',
+            'libdir=${exec_prefix}/lib',
+            'includedir=${prefix}/include',
+            '',
+            'Name: libusb-1.0',
+            'Description: libusb for Windows (bundled for CI)',
+            'Version: 1.0.27',
+            'Libs: -L${libdir} -lusb-1.0',
+            'Cflags: -I${includedir}/libusb-1.0'
+          )
+          ($pcLines -join "`n") | Out-File -FilePath "$pkgConfigDir\libusb-1.0.pc" -Encoding ASCII -NoNewline
+
+          # Set CGO flags + PKG_CONFIG_PATH for this step
+          $env:CGO_CFLAGS = "-I$libusbDir/include"
+          $env:CGO_LDFLAGS = "-L$libusbDir/lib -lusb-1.0"
+          $env:PKG_CONFIG_PATH = ($pkgConfigDir -replace '\\','/')
+
+          Write-Host "CGO_CFLAGS: $env:CGO_CFLAGS"
+          Write-Host "CGO_LDFLAGS: $env:CGO_LDFLAGS"
           Write-Host "PKG_CONFIG_PATH: $env:PKG_CONFIG_PATH"
 
           # Sanity check: ensure libusb-1.0.pc is actually discoverable
