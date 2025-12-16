@@ -48,7 +48,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          # go.mod requires Go >= 1.24
+          go-version: '1.24.x'
 
       - name: Install dependencies (Linux)
         if: matrix.goos == 'linux'
@@ -101,7 +102,7 @@ jobs:
             docker run --rm --platform linux/arm64 \
               -v "$PWD":/src -w /src \
               -e VERSION="${VERSION}" \
-              golang:1.21-bookworm \
+              golang:1.24-bookworm \
               bash -c "set -e; export PATH=/usr/local/go/bin:\$PATH; \
                        apt-get update && apt-get install -y libusb-1.0-0-dev gcc pkg-config; \
                        OUTPUT_NAME='${OUTPUT_NAME}'; \
@@ -212,242 +213,38 @@ jobs:
           
           echo "BINARY_PATH=${OUTPUT_NAME}" >> $GITHUB_ENV
 
-      - name: Install dependencies (Windows)
+      - name: Set up MSYS2 (Windows)
         if: matrix.goos == 'windows'
-        shell: pwsh
-        run: |
-          # Install TDM-GCC via chocolatey (usually available on Windows runners)
-          Write-Host "Setting up C compiler for Windows..."
-          
-          # Check if chocolatey is available
-          if (Get-Command choco -ErrorAction SilentlyContinue) {
-            Write-Host "Installing build tools via chocolatey..."
-            choco install tdm-gcc pkgconfiglite -y --no-progress
-            # Persist PATH additions for subsequent steps
-            Add-Content -Path $env:GITHUB_PATH -Value "C:\TDM-GCC-64\bin"
-            Add-Content -Path $env:GITHUB_PATH -Value "C:\ProgramData\chocolatey\bin"
-          } else {
-            Write-Host "Chocolatey not available, checking for existing gcc..."
-            # Check common locations
-            $gccPaths = @(
-              "C:\TDM-GCC-64\bin\gcc.exe",
-              "C:\mingw64\bin\gcc.exe",
-              "C:\msys64\mingw64\bin\gcc.exe"
-            )
-            $found = $false
-            foreach ($path in $gccPaths) {
-              if (Test-Path $path) {
-                $gccDir = Split-Path $path
-                $env:PATH = "$gccDir;$env:PATH"
-                Write-Host "Found gcc at: $path"
-                $found = $true
-                break
-              }
-            }
-            if (-not $found) {
-              Write-Host "Warning: No gcc found. CGO build may fail."
-            }
-          }
-          
-          # Verify gcc is available
-          if (Get-Command gcc -ErrorAction SilentlyContinue) {
-            Write-Host "gcc version:"
-            gcc --version
-          } else {
-            Write-Host "ERROR: gcc not found after setup"
-            exit 1
-          }
-          
-          # Download and extract libusb for Windows
-          $libusbDir = "$env:TEMP\libusb"
-          $pkgConfigDir = "$libusbDir\lib\pkgconfig"
-          New-Item -ItemType Directory -Force -Path "$libusbDir\include" | Out-Null
-          New-Item -ItemType Directory -Force -Path "$libusbDir\lib" | Out-Null
-          New-Item -ItemType Directory -Force -Path $pkgConfigDir | Out-Null
-          
-          if (-not (Test-Path "$libusbDir\lib\libusb-1.0.lib")) {
-            Write-Host "Downloading libusb for Windows..."
-            $libusbUrl = "https://github.com/libusb/libusb/releases/download/v1.0.27/libusb-1.0.27-binaries.7z"
-            $libusbZip = "$env:TEMP\libusb.7z"
-            
-            try {
-              Invoke-WebRequest -Uri $libusbUrl -OutFile $libusbZip -ErrorAction Stop
-              Write-Host "Downloaded libusb"
-              
-              # Extract using 7z (usually available on Windows runners)
-              if (Get-Command 7z -ErrorAction SilentlyContinue) {
-                7z x $libusbZip -o"$env:TEMP" -y
-                # Move files to expected structure
-                $extracted = Get-ChildItem "$env:TEMP" -Filter "libusb-1.0.27" -Directory | Select-Object -First 1
-                if ($extracted) {
-                  Copy-Item "$($extracted.FullName)\MS64\dll\*" -Destination "$libusbDir\lib\" -Force
-                  Copy-Item "$($extracted.FullName)\MS64\include\*" -Destination "$libusbDir\include\" -Force
-                  Write-Host "Extracted libusb to $libusbDir"
-                }
-              } else {
-                Write-Host "Warning: 7z not available, cannot extract libusb"
-              }
-            } catch {
-              Write-Host "Warning: Could not download libusb: $_"
-              Write-Host "Build will continue but USB support may not work"
-            }
-          } else {
-            Write-Host "libusb already available at $libusbDir"
-          }
-          
-          # Create pkg-config file for libusb (required by gousb)
-          if (Test-Path "$libusbDir\lib\libusb-1.0.lib") {
-            # Convert Windows path to Unix-style for pkg-config
-            $libusbDirUnix = $libusbDir -replace '\\', '/'
-            $pcLines = @(
-              "prefix=$libusbDirUnix",
-              'exec_prefix=${prefix}',
-              'libdir=${exec_prefix}/lib',
-              'includedir=${prefix}/include',
-              '',
-              'Name: libusb-1.0',
-              'Description: libusb for Windows (bundled for CI)',
-              'Version: 1.0.27',
-              'Libs: -L${libdir} -lusb-1.0',
-              'Cflags: -I${includedir}/libusb-1.0'
-            )
-            $pcContent = ($pcLines -join "`n")
-            $pcContent | Out-File -FilePath "$pkgConfigDir\libusb-1.0.pc" -Encoding ASCII -NoNewline
-            Write-Host "Created pkg-config file at $pkgConfigDir\libusb-1.0.pc"
-            Write-Host "File contents:"
-            Get-Content "$pkgConfigDir\libusb-1.0.pc"
-            
-            # Persist PKG_CONFIG_PATH for subsequent steps (gousb uses pkg-config on Windows)
-            $pkgConfigPathUnix = $pkgConfigDir -replace '\\', '/'
-            "PKG_CONFIG_PATH=$pkgConfigPathUnix" | Out-File -FilePath $env:GITHUB_ENV -Append
-            Write-Host "Set PKG_CONFIG_PATH to: $pkgConfigPathUnix"
-          }
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-libusb
+            mingw-w64-x86_64-pkgconf
 
       - name: Build binary (Windows)
         if: matrix.goos == 'windows'
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 1
-          CC: gcc
-        shell: pwsh
+        shell: msys2 {0}
         run: |
-          $ErrorActionPreference = "Stop"
-          
-          $VERSION = "${{ github.ref }}".Replace("refs/tags/", "")
-          if ([string]::IsNullOrEmpty($VERSION) -or $VERSION -eq "${{ github.ref }}") {
-            $VERSION = "${{ github.event.inputs.version }}"
-            if ([string]::IsNullOrEmpty($VERSION)) {
-              $VERSION = "dev"
-            }
-          }
-          
-          $OUTPUT_NAME = "receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}.exe"
-          
-          Write-Host "Building $OUTPUT_NAME with version $VERSION"
-          Write-Host "GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=1"
-          
-          # Verify gcc is available
-          if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
-            Write-Error "ERROR: gcc not found. Cannot build with CGO."
-            exit 1
-          }
-          Write-Host "Using gcc: $(Get-Command gcc | Select-Object -ExpandProperty Source)"
+          set -euo pipefail
+          VERSION="${GITHUB_REF#refs/tags/}"
+          if [[ -z "${VERSION}" || "${VERSION}" == "${GITHUB_REF}" ]]; then
+            VERSION="${{ github.event.inputs.version || 'dev' }}"
+          fi
 
-          # Ensure libusb is present and pkg-config can find it (don't rely on previous steps)
-          $libusbDir = "$env:TEMP\libusb"
-          $pkgConfigDir = "$libusbDir\lib\pkgconfig"
-          New-Item -ItemType Directory -Force -Path "$libusbDir\include" | Out-Null
-          New-Item -ItemType Directory -Force -Path "$libusbDir\lib" | Out-Null
-          New-Item -ItemType Directory -Force -Path $pkgConfigDir | Out-Null
+          OUTPUT_NAME="receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}.exe"
+          echo "Building ${OUTPUT_NAME} with version ${VERSION}"
 
-          if (-not (Test-Path "$libusbDir\lib\libusb-1.0.lib")) {
-            Write-Host "Downloading libusb for Windows..."
-            $libusbUrl = "https://github.com/libusb/libusb/releases/download/v1.0.27/libusb-1.0.27-binaries.7z"
-            $libusbZip = "$env:TEMP\libusb.7z"
-            Invoke-WebRequest -Uri $libusbUrl -OutFile $libusbZip -ErrorAction Stop
+          export GOOS=windows
+          export GOARCH=amd64
+          export CGO_ENABLED=1
+          export CC=gcc
+          export PKG_CONFIG_PATH="/mingw64/lib/pkgconfig"
 
-            if (-not (Get-Command 7z -ErrorAction SilentlyContinue)) {
-              Write-Error "7z not found, cannot extract libusb archive"
-              exit 1
-            }
-
-            7z x $libusbZip -o"$env:TEMP" -y | Out-Null
-            $extracted = Get-ChildItem "$env:TEMP" -Filter "libusb-1.0.27" -Directory | Select-Object -First 1
-            if (-not $extracted) {
-              Write-Error "Could not find extracted libusb directory"
-              exit 1
-            }
-
-            Copy-Item "$($extracted.FullName)\MS64\dll\*" -Destination "$libusbDir\lib\" -Force
-            Copy-Item "$($extracted.FullName)\MS64\include\*" -Destination "$libusbDir\include\" -Force
-          }
-
-          if (-not (Test-Path "$libusbDir\lib\libusb-1.0.lib")) {
-            Write-Error "libusb import library not found at $libusbDir\lib\libusb-1.0.lib"
-            Get-ChildItem -Force "$libusbDir\lib" | Format-Table -AutoSize
-            exit 1
-          }
-
-          # Generate libusb-1.0.pc for pkg-config (gousb uses pkg-config on Windows)
-          $libusbDirUnix = $libusbDir -replace '\\', '/'
-          $pcLines = @(
-            "prefix=$libusbDirUnix",
-            'exec_prefix=${prefix}',
-            'libdir=${exec_prefix}/lib',
-            'includedir=${prefix}/include',
-            '',
-            'Name: libusb-1.0',
-            'Description: libusb for Windows (bundled for CI)',
-            'Version: 1.0.27',
-            'Libs: -L${libdir} -lusb-1.0',
-            'Cflags: -I${includedir}/libusb-1.0'
-          )
-          ($pcLines -join "`n") | Out-File -FilePath "$pkgConfigDir\libusb-1.0.pc" -Encoding ASCII -NoNewline
-
-          # Set CGO flags + PKG_CONFIG_PATH for this step
-          $env:CGO_CFLAGS = "-I$libusbDir/include"
-          $env:CGO_LDFLAGS = "-L$libusbDir/lib -lusb-1.0"
-          $env:PKG_CONFIG_PATH = ($pkgConfigDir -replace '\\','/')
-
-          Write-Host "CGO_CFLAGS: $env:CGO_CFLAGS"
-          Write-Host "CGO_LDFLAGS: $env:CGO_LDFLAGS"
-          Write-Host "PKG_CONFIG_PATH: $env:PKG_CONFIG_PATH"
-
-          # Sanity check: ensure libusb-1.0.pc is actually discoverable
-          $pcFile = Join-Path $env:PKG_CONFIG_PATH "libusb-1.0.pc"
-          if (-not (Test-Path $pcFile)) {
-            Write-Error "pkg-config file not found at: $pcFile"
-            Write-Host "Directory listing of PKG_CONFIG_PATH:"
-            Get-ChildItem -Force $env:PKG_CONFIG_PATH | Format-Table -AutoSize
-            exit 1
-          }
-          if (Get-Command pkg-config -ErrorAction SilentlyContinue) {
-            Write-Host "pkg-config test (should succeed):"
-            pkg-config --cflags --libs libusb-1.0
-          } else {
-            Write-Error "pkg-config not found on PATH"
-            exit 1
-          }
-
-          Write-Host "Building with CGO (pkg-config)..."
-          go build -v -ldflags "-X main.Version=$VERSION" -o $OUTPUT_NAME ./cmd/server
-          
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "Build failed with exit code $LASTEXITCODE"
-            exit $LASTEXITCODE
-          }
-          
-          # Verify binary was created
-          if (-not (Test-Path $OUTPUT_NAME)) {
-            Write-Error "Error: Binary $OUTPUT_NAME was not created"
-            exit 1
-          }
-          
-          Write-Host "Build successful!"
-          Get-Item $OUTPUT_NAME | Format-List
-          
-          "BINARY_PATH=$OUTPUT_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
+          pkg-config --cflags --libs libusb-1.0
+          go build -v -ldflags "-X main.Version=${VERSION}" -o "${OUTPUT_NAME}" ./cmd/server
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
