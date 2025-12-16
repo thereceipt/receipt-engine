@@ -106,9 +106,9 @@ jobs:
               bash -c "set -e; export PATH=/usr/local/go/bin:\$PATH; \
                        apt-get update && apt-get install -y libusb-1.0-0-dev gcc pkg-config; \
                        OUTPUT_NAME='${OUTPUT_NAME}'; \
-                       /usr/local/go/bin/go build -v -ldflags \"-X main.Version=\$VERSION\" -o \"\$OUTPUT_NAME\" ./cmd/server"
+                       /usr/local/go/bin/go build -buildvcs=false -v -ldflags \"-X main.Version=\$VERSION\" -o \"\$OUTPUT_NAME\" ./cmd/server"
           else
-            go build -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
+            go build -buildvcs=false -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
           fi
           
           # Verify binary was created
@@ -148,7 +148,7 @@ jobs:
           echo "CGO_LDFLAGS=${CGO_LDFLAGS}"
           echo "GOOS=${GOOS} GOARCH=${GOARCH} CGO_ENABLED=${CGO_ENABLED}"
 
-          go build -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
+          go build -buildvcs=false -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
           
           # Verify binary was created
           if [ ! -f "${OUTPUT_NAME}" ]; then
@@ -200,7 +200,7 @@ jobs:
           echo "CC=${CC}"
           
           # For ARM64, ensure we use native architecture
-          go build -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
+          go build -buildvcs=false -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
           
           # Verify binary was created
           if [ ! -f "${OUTPUT_NAME}" ]; then
@@ -219,6 +219,8 @@ jobs:
         with:
           msystem: MINGW64
           update: true
+          # Ensure Go installed by actions/setup-go is visible inside the MSYS2 shell
+          path-type: inherit
           install: >-
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-libusb
@@ -244,7 +246,8 @@ jobs:
           export PKG_CONFIG_PATH="/mingw64/lib/pkgconfig"
 
           pkg-config --cflags --libs libusb-1.0
-          go build -v -ldflags "-X main.Version=${VERSION}" -o "${OUTPUT_NAME}" ./cmd/server
+          go version
+          go build -buildvcs=false -v -ldflags "-X main.Version=${VERSION}" -o "${OUTPUT_NAME}" ./cmd/server
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
