@@ -23,7 +23,8 @@ jobs:
             arch: amd64
             goos: linux
             goarch: amd64
-          - os: ubuntu-24.04-arm64
+          # Linux ARM64: build via QEMU+Docker on ubuntu-latest (CGO + libusb doesn't cross-compile cleanly)
+          - os: ubuntu-latest
             arch: arm64
             goos: linux
             goarch: arm64
@@ -53,7 +54,14 @@ jobs:
         if: matrix.goos == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libusb-1.0-0-dev gcc
+          # For linux/arm64 we build inside an arm64 container, so deps are installed there.
+          if [ "${{ matrix.goarch }}" != "arm64" ]; then
+            sudo apt-get install -y libusb-1.0-0-dev gcc
+          fi
+
+      - name: Set up QEMU (Linux ARM64)
+        if: matrix.goos == 'linux' && matrix.goarch == 'arm64'
+        uses: docker/setup-qemu-action@v3
 
       - name: Install dependencies (macOS Intel)
         if: matrix.goos == 'darwin' && matrix.goarch == 'amd64'
@@ -87,8 +95,19 @@ jobs:
           
           echo "Building ${OUTPUT_NAME} with version ${VERSION}"
           echo "GOOS=${GOOS} GOARCH=${GOARCH} CGO_ENABLED=${CGO_ENABLED} CC=${CC}"
-          
-          go build -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
+
+          if [ "${{ matrix.goarch }}" == "arm64" ]; then
+            # Build in a linux/arm64 container (QEMU) so CGO links against native arm64 libusb.
+            docker run --rm --platform linux/arm64 \
+              -v "$PWD":/src -w /src \
+              -e VERSION="${VERSION}" \
+              golang:1.21-bookworm \
+              bash -lc "apt-get update && apt-get install -y libusb-1.0-0-dev gcc pkg-config && \
+                        OUTPUT_NAME='${OUTPUT_NAME}' && \
+                        go build -v -ldflags \"-X main.Version=\$VERSION\" -o \"\$OUTPUT_NAME\" ./cmd/server"
+          else
+            go build -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
+          fi
           
           # Verify binary was created
           if [ ! -f "${OUTPUT_NAME}" ]; then
@@ -340,15 +359,14 @@ jobs:
             $env:CGO_CFLAGS = "-I$libusbDir/include"
             $env:CGO_LDFLAGS = "-L$libusbDir/lib -lusb-1.0"
           }
-          if ($env:PKG_CONFIG_PATH) {
-            Write-Host "PKG_CONFIG_PATH: $env:PKG_CONFIG_PATH"
+          
+          # Ensure PKG_CONFIG_PATH is set (don’t rely on previous step env propagation)
+          if (-not $env:PKG_CONFIG_PATH) {
+            $env:PKG_CONFIG_PATH = ("$libusbDir\lib\pkgconfig" -replace '\\','/')
           }
+          Write-Host "PKG_CONFIG_PATH: $env:PKG_CONFIG_PATH"
 
           # Sanity check: ensure libusb-1.0.pc is actually discoverable
-          if (-not $env:PKG_CONFIG_PATH) {
-            Write-Error "PKG_CONFIG_PATH is not set (expected from previous step)."
-            exit 1
-          }
           $pcFile = Join-Path $env:PKG_CONFIG_PATH "libusb-1.0.pc"
           if (-not (Test-Path $pcFile)) {
             Write-Error "pkg-config file not found at: $pcFile"
