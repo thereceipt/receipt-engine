@@ -284,18 +284,7 @@ jobs:
           if (Test-Path "$libusbDir\lib\libusb-1.0.lib") {
             # Convert Windows path to Unix-style for pkg-config
             $libusbDirUnix = $libusbDir -replace '\\', '/'
-            $pcContent = @"
-prefix=$libusbDirUnix
-exec_prefix=`${prefix}
-libdir=`${exec_prefix}/lib
-includedir=`${prefix}/include
-
-Name: libusb-1.0
-Description: C API for USB device access from Linux, macOS, Windows, and OpenBSD/NetBSD userspace
-Version: 1.0.27
-Libs: -L`${libdir} -lusb-1.0
-Cflags: -I`${includedir}/libusb-1.0
-"@
+            $pcContent = "prefix=$libusbDirUnix`nexec_prefix=`${prefix}`nlibdir=`${exec_prefix}/lib`nincludedir=`${prefix}/include`n`nName: libusb-1.0`nDescription: C API for USB device access from Linux, macOS, Windows, and OpenBSD/NetBSD userspace`nVersion: 1.0.27`nLibs: -L`${libdir} -lusb-1.0`nCflags: -I`${includedir}/libusb-1.0"
             $pcContent | Out-File -FilePath "$pkgConfigDir\libusb-1.0.pc" -Encoding ASCII -NoNewline
             Write-Host "Created pkg-config file at $pkgConfigDir\libusb-1.0.pc"
             Write-Host "File contents:"
@@ -406,7 +395,7 @@ Cflags: -I`${includedir}/libusb-1.0
         uses: actions/upload-artifact@v4
         with:
           name: receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: ${{ env.BINARY_PATH }}
+          path: receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }}
           retention-days: 30
           if-no-files-found: error
 
