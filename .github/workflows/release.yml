@@ -27,7 +27,7 @@ jobs:
             arch: arm64
             goos: linux
             goarch: arm64
-          - os: macos-13
+          - os: macos-15-intel
             arch: amd64
             goos: darwin
             goarch: amd64
@@ -298,8 +298,9 @@ jobs:
             Get-Content "$pkgConfigDir\libusb-1.0.pc"
             
             # Persist PKG_CONFIG_PATH for subsequent steps (gousb uses pkg-config on Windows)
-            "PKG_CONFIG_PATH=$pkgConfigDir" | Out-File -FilePath $env:GITHUB_ENV -Append
-            Write-Host "Set PKG_CONFIG_PATH to: $pkgConfigDir"
+            $pkgConfigPathUnix = $pkgConfigDir -replace '\\', '/'
+            "PKG_CONFIG_PATH=$pkgConfigPathUnix" | Out-File -FilePath $env:GITHUB_ENV -Append
+            Write-Host "Set PKG_CONFIG_PATH to: $pkgConfigPathUnix"
           }
 
       - name: Build binary (Windows)
@@ -341,6 +342,26 @@ jobs:
           }
           if ($env:PKG_CONFIG_PATH) {
             Write-Host "PKG_CONFIG_PATH: $env:PKG_CONFIG_PATH"
+          }
+
+          # Sanity check: ensure libusb-1.0.pc is actually discoverable
+          if (-not $env:PKG_CONFIG_PATH) {
+            Write-Error "PKG_CONFIG_PATH is not set (expected from previous step)."
+            exit 1
+          }
+          $pcFile = Join-Path $env:PKG_CONFIG_PATH "libusb-1.0.pc"
+          if (-not (Test-Path $pcFile)) {
+            Write-Error "pkg-config file not found at: $pcFile"
+            Write-Host "Directory listing of PKG_CONFIG_PATH:"
+            Get-ChildItem -Force $env:PKG_CONFIG_PATH | Format-Table -AutoSize
+            exit 1
+          }
+          if (Get-Command pkg-config -ErrorAction SilentlyContinue) {
+            Write-Host "pkg-config test (should succeed):"
+            pkg-config --cflags --libs libusb-1.0
+          } else {
+            Write-Error "pkg-config not found on PATH"
+            exit 1
           }
 
           Write-Host "Building with CGO (pkg-config)..."
