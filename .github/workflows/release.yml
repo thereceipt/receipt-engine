@@ -27,11 +27,11 @@ jobs:
             arch: arm64
             goos: linux
             goarch: arm64
-          - os: macos-14
+          - os: macos-15
             arch: amd64
             goos: darwin
             goarch: amd64
-          - os: macos-14
+          - os: macos-15
             arch: arm64
             goos: darwin
             goarch: arm64
@@ -53,11 +53,21 @@ jobs:
         if: matrix.goos == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libusb-1.0-0-dev gcc
+          if [ "${{ matrix.goarch }}" == "arm64" ]; then
+            # For ARM64 cross-compilation, install cross-compiler, binutils, and libraries
+            sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu libusb-1.0-0-dev:arm64
+            # Also install native gcc for Go's build tools
+            sudo apt-get install -y gcc
+          else
+            sudo apt-get install -y libusb-1.0-0-dev gcc
+          fi
 
       - name: Install dependencies (macOS Intel)
         if: matrix.goos == 'darwin' && matrix.goarch == 'amd64'
         run: |
+          # Install libusb for x86_64 architecture
+          arch -x86_64 /usr/local/bin/brew install libusb || \
+          arch -x86_64 /opt/homebrew/bin/brew install libusb || \
           brew install libusb || true
           # Ensure we have the right toolchain
           xcode-select --install || true
@@ -75,7 +85,6 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 1
-          CC: gcc
         run: |
           set -e
           VERSION=${GITHUB_REF#refs/tags/}
@@ -85,8 +94,25 @@ jobs:
           
           OUTPUT_NAME="receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}"
           
+          # Set appropriate compiler and flags for architecture
+          if [ "${{ matrix.goarch }}" == "arm64" ]; then
+            export CC=aarch64-linux-gnu-gcc
+            export CXX=aarch64-linux-gnu-g++
+            # For cross-compilation, we need to point to ARM64 libraries
+            # Use dpkg-architecture to find the right paths
+            export PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig
+            export CGO_CFLAGS="-I/usr/include/aarch64-linux-gnu"
+            export CGO_LDFLAGS="-L/usr/lib/aarch64-linux-gnu -lusb-1.0"
+          else
+            export CC=gcc
+          fi
+          
           echo "Building ${OUTPUT_NAME} with version ${VERSION}"
-          echo "GOOS=${GOOS} GOARCH=${GOARCH} CGO_ENABLED=${CGO_ENABLED}"
+          echo "GOOS=${GOOS} GOARCH=${GOARCH} CGO_ENABLED=${CGO_ENABLED} CC=${CC}"
+          if [ "${{ matrix.goarch }}" == "arm64" ]; then
+            echo "CGO_CFLAGS=${CGO_CFLAGS}"
+            echo "CGO_LDFLAGS=${CGO_LDFLAGS}"
+          fi
           
           go build -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
           
@@ -117,10 +143,26 @@ jobs:
           
           OUTPUT_NAME="receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}"
           
-          # Get libusb paths
-          LIBUSB_PREFIX=$(brew --prefix libusb 2>/dev/null || echo "/opt/homebrew")
-          if [ ! -d "${LIBUSB_PREFIX}/include" ]; then
-            LIBUSB_PREFIX="/usr/local"
+          # Get libusb paths - prefer /usr/local for x86_64 (Intel) builds
+          # /opt/homebrew is ARM64, so we need /usr/local for Intel
+          LIBUSB_PREFIX="/usr/local"
+          if [ ! -d "${LIBUSB_PREFIX}/include" ] || [ ! -f "${LIBUSB_PREFIX}/lib/libusb-1.0.dylib" ]; then
+            # Try to find x86_64 libusb
+            BREW_PREFIX=$(arch -x86_64 /usr/local/bin/brew --prefix libusb 2>/dev/null || \
+                          arch -x86_64 /opt/homebrew/bin/brew --prefix libusb 2>/dev/null || \
+                          echo "")
+            if [ -n "${BREW_PREFIX}" ] && [ -d "${BREW_PREFIX}/include" ]; then
+              LIBUSB_PREFIX="${BREW_PREFIX}"
+            fi
+          fi
+          
+          # Verify we have x86_64 libraries
+          if [ -f "${LIBUSB_PREFIX}/lib/libusb-1.0.dylib" ]; then
+            FILE_ARCH=$(file "${LIBUSB_PREFIX}/lib/libusb-1.0.dylib" | grep -o "x86_64\|arm64" || echo "")
+            if [ "${FILE_ARCH}" != "x86_64" ] && [ -n "${FILE_ARCH}" ]; then
+              echo "Warning: Found ${FILE_ARCH} library, need x86_64. Trying /usr/local..."
+              LIBUSB_PREFIX="/usr/local"
+            fi
           fi
           
           export CGO_CFLAGS="-I${LIBUSB_PREFIX}/include"
@@ -132,9 +174,8 @@ jobs:
           echo "CGO_LDFLAGS=${CGO_LDFLAGS}"
           echo "GOOS=${GOOS} GOARCH=${GOARCH} CGO_ENABLED=${CGO_ENABLED}"
           
-          # Ensure we're building for Intel
-          arch -x86_64 go build -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server || \
-          go build -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
+          # Build for x86_64 architecture
+          arch -x86_64 go build -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
           
           # Verify binary was created
           if [ ! -f "${OUTPUT_NAME}" ]; then
@@ -327,51 +368,29 @@ jobs:
           }
           Write-Host "Using gcc: $(Get-Command gcc | Select-Object -ExpandProperty Source)"
           
-          # Verify pkg-config can find libusb
+          # Set up CGO flags for libusb
           $libusbDir = "$env:TEMP\libusb"
           if (Test-Path "$libusbDir\lib\libusb-1.0.lib") {
-            Write-Host "Verifying pkg-config setup..."
-            $pkgConfigPath = "$libusbDir\lib\pkgconfig"
-            $env:PKG_CONFIG_PATH = "$pkgConfigPath;$env:PKG_CONFIG_PATH"
-            
-            # Try to find pkg-config
-            $pkgConfig = $null
-            $pkgConfigPaths = @(
-              "pkg-config",
-              "pkg-config.exe",
-              "C:\ProgramData\chocolatey\bin\pkg-config.exe",
-              "C:\Strawberry\c\bin\pkg-config.exe"
-            )
-            
-            foreach ($path in $pkgConfigPaths) {
-              if (Get-Command $path -ErrorAction SilentlyContinue) {
-                $pkgConfig = $path
-                break
-              }
-            }
-            
-            if ($pkgConfig) {
-              Write-Host "Found pkg-config at: $pkgConfig"
-              & $pkgConfig --modversion libusb-1.0
-              if ($LASTEXITCODE -eq 0) {
-                Write-Host "pkg-config successfully found libusb-1.0"
-              } else {
-                Write-Host "Warning: pkg-config could not find libusb-1.0, but continuing..."
-                Write-Host "PKG_CONFIG_PATH: $env:PKG_CONFIG_PATH"
-              }
-            } else {
-              Write-Host "Warning: pkg-config not found, but continuing with direct CGO flags..."
-            }
-            
             Write-Host "Using libusb from: $libusbDir"
+            # Convert Windows path to forward slashes for CGO
+            $libusbDirUnix = $libusbDir -replace '\\', '/'
+            $env:CGO_CFLAGS = "-I$libusbDirUnix/include"
+            $env:CGO_LDFLAGS = "-L$libusbDirUnix/lib -lusb-1.0"
+            Write-Host "CGO_CFLAGS: $env:CGO_CFLAGS"
+            Write-Host "CGO_LDFLAGS: $env:CGO_LDFLAGS"
           } else {
-            Write-Host "Warning: libusb not found at $libusbDir"
+            Write-Host "Warning: libusb not found at $libusbDir, build may fail"
           }
           
           # Build with CGO
           Write-Host "Starting build..."
           Write-Host "GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=1"
-          Write-Host "PKG_CONFIG_PATH=$env:PKG_CONFIG_PATH"
+          if ($env:CGO_CFLAGS) {
+            Write-Host "CGO_CFLAGS: $env:CGO_CFLAGS"
+          }
+          if ($env:CGO_LDFLAGS) {
+            Write-Host "CGO_LDFLAGS: $env:CGO_LDFLAGS"
+          }
           
           go build -v -ldflags "-X main.Version=$VERSION" -o $OUTPUT_NAME ./cmd/server
           
