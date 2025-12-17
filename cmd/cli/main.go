@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -30,8 +31,6 @@ func main() {
 
 	// Check if this is a print command with --compose flag
 	var command string
-	var tempFile string
-	var err error
 
 	if len(args) >= 2 && args[0] == "print" {
 		// Look for --compose flag
@@ -44,17 +43,39 @@ func main() {
 		}
 
 		if composeIndex >= 0 {
-			// Parse compose arguments and create temporary receipt file
-			composeArgs := args[composeIndex+1:]
-			tempFile, err = createComposedReceipt(composeArgs)
+			// Parse compose arguments and create receipt JSON
+			rest := args[composeIndex+1:]
+			if len(rest) == 0 {
+				fmt.Fprintf(os.Stderr, "Error: --compose requires at least one command argument\n")
+				os.Exit(1)
+			}
+
+			// Stop compose parsing when flags start (e.g. --repeat, --var, --var-array)
+			composeEnd := 0
+			for composeEnd < len(rest) && !strings.HasPrefix(rest[composeEnd], "--") {
+				composeEnd++
+			}
+			composeArgs := rest[:composeEnd]
+			remainderArgs := rest[composeEnd:]
+			if len(composeArgs) == 0 {
+				fmt.Fprintf(os.Stderr, "Error: --compose requires at least one command argument\n")
+				os.Exit(1)
+			}
+
+			// Create receipt JSON from compose arguments
+			receiptJSON, err := createComposedReceiptJSON(composeArgs)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error creating composed receipt: %v\n", err)
 				os.Exit(1)
 			}
-			defer os.Remove(tempFile) // Clean up temp file
 
-			// Reconstruct command with temp file path instead of --compose args
-			newArgs := append(args[:composeIndex], tempFile)
+			// Base64 encode the JSON to safely pass it in the command string
+			encodedJSON := base64.StdEncoding.EncodeToString(receiptJSON)
+			inlineReceipt := fmt.Sprintf("compose://%s", encodedJSON)
+
+			// Reconstruct command with inline receipt instead of --compose args
+			newArgs := append(args[:composeIndex], inlineReceipt)
+			newArgs = append(newArgs, remainderArgs...)
 			command = strings.Join(newArgs, " ")
 		} else {
 			command = strings.Join(args, " ")
@@ -84,19 +105,31 @@ Flags:
   -s, -server <url>    Server URL (default: %s)
 
 Commands:
-  print <printer-id> <receipt-path> [--var key=value]
+  print <printer-id> <receipt-path> [--repeat N] [--var key=value]
     Print a receipt to the specified printer
     
   print <printer-id> --compose <commands...>
     Compose and print a receipt from command-line arguments
-    Compose commands:
-      text:"Hello World"              - Text command
-      text:"Title" size:32 align:center - Text with properties
-      feed:2                          - Feed lines
+    
+    Available Commands:
+      text:"Hello"                    - Text with value
+      text:"Title" size:32 align:center weight:bold - Text with properties
+      feed:2                          - Feed N lines
       cut                             - Cut paper
-      align:center                    - Set alignment
-      divider                         - Add divider
+      divider                         - Add divider line
+      divider style:solid|dashed|dotted|double - Divider with style
+      image:"/path/to/image.png"      - Print image from path
+      barcode:"123456"                - Print barcode
+      barcode:"123456" format:CODE128 height:50 - Barcode with options
+      qrcode:"https://example.com"    - Print QR code
+      qrcode:"data" error_correction:L|M|Q|H - QR code with error correction
       
+    Note: Use align as a property of text commands, not as a standalone command
+    Note: Add --repeat N after the receipt / compose to print multiple times
+      
+  server status|stop|restart
+    Server lifecycle commands (stop/restart affect the running server process)
+    
   printer list
     List all detected printers
     
@@ -192,35 +225,155 @@ func printSuccess(result *CommandResult) {
 	if result.Data != nil {
 		// Pretty print data
 		if printers, ok := result.Data["printers"].([]interface{}); ok {
-			fmt.Println("\nPrinters:")
 			for _, p := range printers {
 				if printer, ok := p.(map[string]interface{}); ok {
-					name := printer["name"]
-					if name == "" {
-						name = printer["description"]
+					displayName := getString(printer, "name")
+					if displayName == "" {
+						displayName = getString(printer, "description")
 					}
-					fmt.Printf("  %s: %s (%s)\n", printer["id"], name, printer["type"])
+					if displayName == "" {
+						displayName = "Unnamed"
+					}
+
+					printerID := getString(printer, "id")
+					printerType := getString(printer, "type")
+
+					// Build description line
+					desc := fmt.Sprintf("  %s: %s (%s", printerID, displayName, printerType)
+
+					if printerType == "network" {
+						host := getString(printer, "host")
+						port := getInt(printer, "port")
+						if host != "" && port > 0 {
+							desc += fmt.Sprintf(", %s:%d", host, port)
+						}
+					} else if printerType == "serial" {
+						device := getString(printer, "device")
+						if device != "" {
+							desc += fmt.Sprintf(", %s", device)
+						}
+					} else if printerType == "usb" {
+						vid := getInt(printer, "vid")
+						pid := getInt(printer, "pid")
+						if vid > 0 && pid > 0 {
+							desc += fmt.Sprintf(", VID:0x%04X PID:0x%04X", vid, pid)
+						}
+						device := getString(printer, "device")
+						if device != "" {
+							desc += fmt.Sprintf(", %s", device)
+						}
+					}
+
+					desc += ")"
+					fmt.Println(desc)
 				}
 			}
 		}
 
 		if jobs, ok := result.Data["jobs"].([]interface{}); ok {
-			fmt.Println("\nJobs:")
 			for _, j := range jobs {
 				if job, ok := j.(map[string]interface{}); ok {
-					fmt.Printf("  %s: %s (printer: %s)\n",
-						job["id"], job["status"], job["printer_id"])
+					jobID := getString(job, "id")
+					status := getString(job, "status")
+					printerID := getString(job, "printer_id")
+					retries := getInt(job, "retries")
+					createdAt := getString(job, "created_at")
+					errorMsg := getString(job, "error")
+
+					line := fmt.Sprintf("  %s: %s (printer: %s, retries: %d", jobID, status, printerID, retries)
+					if createdAt != "" {
+						line += fmt.Sprintf(", created: %s", createdAt)
+					}
+					line += ")"
+					if errorMsg != "" {
+						line += fmt.Sprintf(" - Error: %s", errorMsg)
+					}
+					fmt.Println(line)
 				}
 			}
+		}
+
+		if jobData, ok := result.Data["job"].(map[string]interface{}); ok {
+			// Single job details
+			printJobDetails(jobData)
 		}
 
 		if jobID, ok := result.Data["job_id"].(string); ok {
 			fmt.Printf("Job ID: %s\n", jobID)
 		}
 
-		if printerID, ok := result.Data["printer_id"].(string); ok {
+		if printerID, ok := result.Data["printer_id"].(string); ok && result.Data["printer"] == nil {
+			// Only print if we don't have full printer data
 			fmt.Printf("Printer ID: %s\n", printerID)
 		}
+
+		if printer, ok := result.Data["printer"].(map[string]interface{}); ok {
+			displayName := getString(printer, "name")
+			if displayName == "" {
+				displayName = getString(printer, "description")
+			}
+			printerID := getString(printer, "id")
+			printerType := getString(printer, "type")
+			fmt.Printf("  ID: %s, Name: %s, Type: %s", printerID, displayName, printerType)
+			if printerType == "network" {
+				host := getString(printer, "host")
+				port := getInt(printer, "port")
+				if host != "" && port > 0 {
+					fmt.Printf(", %s:%d", host, port)
+				}
+			}
+			fmt.Println()
+		}
+
+		if oldName, ok := result.Data["old_name"].(string); ok {
+			if newName, ok2 := result.Data["new_name"].(string); ok2 && newName != "" {
+				fmt.Printf("  Renamed from '%s' to '%s'\n", oldName, newName)
+			}
+		}
+	}
+}
+
+// Helper functions for safe map access
+func getString(m map[string]interface{}, key string) string {
+	if val, ok := m[key]; ok {
+		if str, ok := val.(string); ok {
+			return str
+		}
+	}
+	return ""
+}
+
+func getInt(m map[string]interface{}, key string) int {
+	if val, ok := m[key]; ok {
+		switch v := val.(type) {
+		case int:
+			return v
+		case int64:
+			return int(v)
+		case float64:
+			return int(v)
+		}
+	}
+	return 0
+}
+
+func printJobDetails(job map[string]interface{}) {
+	jobID := getString(job, "id")
+	status := getString(job, "status")
+	printerID := getString(job, "printer_id")
+	retries := getInt(job, "retries")
+	createdAt := getString(job, "created_at")
+	errorMsg := getString(job, "error")
+
+	fmt.Printf("  Job ID: %s\n", jobID)
+	fmt.Printf("  Status: %s\n", status)
+	fmt.Printf("  Printer ID: %s\n", printerID)
+	fmt.Printf("  Retries: %d\n", retries)
+	if createdAt != "" {
+		fmt.Printf("  Created: %s\n", createdAt)
+	}
+	if errorMsg != "" {
+		fmt.Printf("  Error: %s\n", errorMsg)
 	}
 }
 
@@ -232,12 +385,12 @@ func printError(result *CommandResult) {
 	}
 }
 
-// createComposedReceipt parses compose arguments and creates a temporary receipt file
+// createComposedReceiptJSON parses compose arguments and returns receipt JSON as bytes
 // Arguments are parsed into commands. Each command starts with a command type (e.g., "text:", "feed:", "cut")
 // and can be followed by properties (e.g., "size:32", "align:center")
-func createComposedReceipt(composeArgs []string) (string, error) {
+func createComposedReceiptJSON(composeArgs []string) ([]byte, error) {
 	if len(composeArgs) == 0 {
-		return "", fmt.Errorf("no compose arguments provided")
+		return nil, fmt.Errorf("no compose arguments provided")
 	}
 
 	commands := []map[string]interface{}{}
@@ -254,15 +407,15 @@ func createComposedReceipt(composeArgs []string) (string, error) {
 			var err error
 			currentCmd, err = parseComposeCommandStart(arg)
 			if err != nil {
-				return "", fmt.Errorf("failed to parse command '%s': %v", arg, err)
+				return nil, fmt.Errorf("failed to parse command '%s': %v", arg, err)
 			}
 		} else if currentCmd != nil {
 			// This is a property for the current command
 			if err := parseCommandProperty(currentCmd, arg); err != nil {
-				return "", fmt.Errorf("failed to parse property '%s': %v", arg, err)
+				return nil, fmt.Errorf("failed to parse property '%s': %v", arg, err)
 			}
 		} else {
-			return "", fmt.Errorf("unexpected argument '%s' (expected command start)", arg)
+			return nil, fmt.Errorf("unexpected argument '%s' (expected command start)", arg)
 		}
 	}
 
@@ -276,28 +429,20 @@ func createComposedReceipt(composeArgs []string) (string, error) {
 		"commands": commands,
 	}
 
-	// Create temporary file
-	tmpFile, err := os.CreateTemp("", "receipt-composed-*.receipt")
+	// Marshal to JSON (compact, single line)
+	jsonData, err := json.Marshal(receipt)
 	if err != nil {
-		return "", fmt.Errorf("failed to create temp file: %v", err)
-	}
-	defer tmpFile.Close()
-
-	// Write JSON to file
-	encoder := json.NewEncoder(tmpFile)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(receipt); err != nil {
-		os.Remove(tmpFile.Name())
-		return "", fmt.Errorf("failed to write receipt JSON: %v", err)
+		return nil, fmt.Errorf("failed to marshal receipt JSON: %v", err)
 	}
 
-	return tmpFile.Name(), nil
+	return jsonData, nil
 }
 
 // isCommandStart checks if an argument starts a new command
 func isCommandStart(arg string) bool {
-	// Check for command types: text:, feed:, align:, cut, divider, etc.
-	knownCommands := []string{"text:", "feed:", "align:", "cut", "divider", "image:", "barcode:", "qrcode:"}
+	// Check for command types: text:, feed:, cut, divider, etc.
+	// Note: align is not a standalone command; use it as a property (e.g. text:"Hi" align:center)
+	knownCommands := []string{"text:", "feed:", "cut", "divider", "image:", "barcode:", "qrcode:"}
 	for _, cmd := range knownCommands {
 		if strings.HasPrefix(arg, cmd) || arg == strings.TrimSuffix(cmd, ":") {
 			return true
@@ -334,8 +479,6 @@ func parseComposeCommandStart(arg string) (map[string]interface{}, error) {
 			return nil, fmt.Errorf("invalid feed lines value: %s", firstValue)
 		}
 		cmd["lines"] = lines
-	case "align":
-		cmd["value"] = strings.Trim(firstValue, `"'`)
 	case "image":
 		cmd["path"] = strings.Trim(firstValue, `"'`)
 	case "barcode", "qrcode":

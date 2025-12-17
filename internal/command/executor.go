@@ -54,6 +54,8 @@ func (e *Executor) Execute(cmdStr string) *Result {
 		return e.handlePrinter(args)
 	case "job":
 		return e.handleJob(args)
+	case "server":
+		return e.handleServer(args)
 	case "detect":
 		return e.handleDetect(args)
 	case "help":
