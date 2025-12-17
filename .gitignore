@@ -42,3 +42,4 @@ __debug_bin
 # Environment
 .env
 .env.local
+SECURITY_ASSESSMENT.md

@@ -343,6 +343,10 @@ func (e *Executor) handleHelp(args []string) *Result {
   print <printer-id> <receipt-path> [--var key=value]
     Print a receipt to the specified printer
     
+  print <printer-id> --compose <commands...>
+    Compose and print a receipt from command-line arguments
+    Example: print printer-123 --compose text:"Hello" feed:2 cut
+    
   printer list
     List all detected printers
     
@@ -370,6 +374,8 @@ func (e *Executor) handleHelp(args []string) *Result {
 Examples:
   print printer-123 ./receipt.receipt
   print printer-123 ./receipt.receipt --var customer="John Doe"
+  print printer-123 --compose text:"Hello World" feed:2 cut
+  print printer-123 --compose text:"Title" size:32 align:center feed:1 cut
   printer add-network 192.168.1.100 9100
   printer rename printer-123 "Kitchen Printer"
   job status job-456
