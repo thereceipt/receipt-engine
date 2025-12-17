@@ -45,10 +45,11 @@ func main() {
 	// Start printer monitor
 	monitor := printer.NewMonitor(manager, 2*time.Second)
 
-	// Create TUI app (using tview)
-	tuiApp := tui.NewTViewApp(manager, pool, queue, port)
+	// Create TUI app (using Bubble Tea)
+	tuiApp := tui.NewApp(manager, pool, queue, port)
 
 	// Set up log capture to TUI
+	// All log output will go to TUI console
 	logWriter := tuiApp.LogWriter()
 	log.SetOutput(io.MultiWriter(os.Stderr, logWriter))
 
@@ -59,18 +60,12 @@ func main() {
 			name = p.Name
 		}
 		tuiApp.AddLog(fmt.Sprintf("🟢 Printer connected: %s", name), "info")
-		// Refresh printers panel
-		tuiApp.App.QueueUpdateDraw(func() {
-			tuiApp.RefreshPrinters()
-		})
+		tuiApp.RefreshPrinters()
 	})
 
 	manager.OnPrinterRemoved(func(id string) {
 		tuiApp.AddLog(fmt.Sprintf("🔴 Printer disconnected: %s", id), "info")
-		// Refresh printers panel
-		tuiApp.App.QueueUpdateDraw(func() {
-			tuiApp.RefreshPrinters()
-		})
+		tuiApp.RefreshPrinters()
 	})
 
 	monitor.Start()
@@ -90,7 +85,7 @@ func main() {
 	}()
 
 	// Start TUI
-	tuiApp.AddLog("🖨️  Receipt Engine starting...", "info")
+	tuiApp.AddLog("🧾 Receipt Engine starting...", "info")
 	if len(printers) > 0 {
 		tuiApp.AddLog(fmt.Sprintf("✅ Found %d printer(s)", len(printers)), "info")
 	}

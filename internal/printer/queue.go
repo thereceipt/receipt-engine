@@ -21,20 +21,20 @@ type PrintJob struct {
 
 // PrintQueue manages print jobs with retry logic
 type PrintQueue struct {
-	jobs      []*PrintJob
-	mu        sync.Mutex
-	pool      *ConnectionPool
-	manager   *Manager
+	jobs       []*PrintJob
+	mu         sync.Mutex
+	pool       *ConnectionPool
+	manager    *Manager
 	maxRetries int
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
 }
 
 // NewPrintQueue creates a new print queue
 func NewPrintQueue(pool *ConnectionPool, manager *Manager, maxRetries int) *PrintQueue {
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	q := &PrintQueue{
 		jobs:       make([]*PrintJob, 0),
 		pool:       pool,
@@ -43,11 +43,11 @@ func NewPrintQueue(pool *ConnectionPool, manager *Manager, maxRetries int) *Prin
 		ctx:        ctx,
 		cancel:     cancel,
 	}
-	
+
 	// Start worker
 	q.wg.Add(1)
 	go q.worker()
-	
+
 	return q
 }
 
@@ -55,7 +55,7 @@ func NewPrintQueue(pool *ConnectionPool, manager *Manager, maxRetries int) *Prin
 func (q *PrintQueue) Enqueue(printerID string, img image.Image) string {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	
+
 	job := &PrintJob{
 		ID:        fmt.Sprintf("job_%d", time.Now().UnixNano()),
 		PrinterID: printerID,
@@ -63,19 +63,19 @@ func (q *PrintQueue) Enqueue(printerID string, img image.Image) string {
 		Status:    "queued",
 		CreatedAt: time.Now(),
 	}
-	
+
 	q.jobs = append(q.jobs, job)
-	
+
 	return job.ID
 }
 
 // worker processes print jobs
 func (q *PrintQueue) worker() {
 	defer q.wg.Done()
-	
+
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-q.ctx.Done():
@@ -88,7 +88,7 @@ func (q *PrintQueue) worker() {
 
 func (q *PrintQueue) processNextJob() {
 	q.mu.Lock()
-	
+
 	// Find next queued job (skip jobs that are already printing, completed, or failed)
 	var job *PrintJob
 	for _, j := range q.jobs {
@@ -98,19 +98,19 @@ func (q *PrintQueue) processNextJob() {
 			break
 		}
 	}
-	
+
 	q.mu.Unlock()
-	
+
 	if job == nil {
 		return // No jobs to process
 	}
-	
+
 	// Attempt to print (only once per job)
 	err := q.printJob(job)
-	
+
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	
+
 	// Double-check job still exists and is still in printing status
 	// (prevents race conditions and ensures we only process once)
 	var foundJob *PrintJob
@@ -120,30 +120,29 @@ func (q *PrintQueue) processNextJob() {
 			break
 		}
 	}
-	
+
 	if foundJob == nil || foundJob.Status != "printing" {
 		// Job was removed or status changed, don't update
 		return
 	}
-	
+
 	if err != nil {
 		foundJob.Retries++
 		foundJob.Error = err
-		
+
 		if foundJob.Retries >= q.maxRetries {
 			foundJob.Status = "failed"
-			fmt.Printf("❌ Print job %s failed after %d retries: %v\n", foundJob.ID, foundJob.Retries, err)
+			// Job failed - error is stored in job.Error, can be viewed in TUI
 		} else {
 			// Retry with delay - mark as queued but add a delay before it can be processed again
 			foundJob.Status = "queued"
-			fmt.Printf("⚠️  Print job %s failed, retrying (%d/%d): %v\n", 
-				foundJob.ID, foundJob.Retries, q.maxRetries, err)
+			// Job retrying - status is tracked in job, can be viewed in TUI
 			// Don't sleep here - let the worker ticker handle timing
 		}
 	} else {
 		// Success - mark as completed immediately
 		foundJob.Status = "completed"
-		fmt.Printf("✅ Print job %s completed\n", foundJob.ID)
+		// Job completed - status is tracked in job, can be viewed in TUI
 	}
 }
 
@@ -154,19 +153,19 @@ func (q *PrintQueue) printJob(job *PrintJob) error {
 		if printer == nil {
 			return fmt.Errorf("printer not found: %s", job.PrinterID)
 		}
-		
+
 		if err := q.pool.Connect(printer); err != nil {
 			return fmt.Errorf("failed to connect to printer: %w", err)
 		}
 	}
-	
+
 	// Print exactly once - Print should be idempotent and atomic
 	// If Print succeeds, it means data was sent once
 	err := q.pool.Print(job.PrinterID, job.Image)
 	if err != nil {
 		return fmt.Errorf("print failed: %w", err)
 	}
-	
+
 	// Success - return nil to mark job as completed
 	return nil
 }
@@ -175,7 +174,7 @@ func (q *PrintQueue) printJob(job *PrintJob) error {
 func (q *PrintQueue) GetJob(jobID string) *PrintJob {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	
+
 	for _, job := range q.jobs {
 		if job.ID == jobID {
 			// Return a copy
@@ -183,7 +182,7 @@ func (q *PrintQueue) GetJob(jobID string) *PrintJob {
 			return &jobCopy
 		}
 	}
-	
+
 	return nil
 }
 
@@ -191,14 +190,14 @@ func (q *PrintQueue) GetJob(jobID string) *PrintJob {
 func (q *PrintQueue) GetAllJobs() []*PrintJob {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	
+
 	// Return copies
 	jobs := make([]*PrintJob, len(q.jobs))
 	for i, job := range q.jobs {
 		jobCopy := *job
 		jobs[i] = &jobCopy
 	}
-	
+
 	return jobs
 }
 
@@ -206,14 +205,14 @@ func (q *PrintQueue) GetAllJobs() []*PrintJob {
 func (q *PrintQueue) ClearCompleted() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	
+
 	filtered := make([]*PrintJob, 0)
 	for _, job := range q.jobs {
 		if job.Status != "completed" {
 			filtered = append(filtered, job)
 		}
 	}
-	
+
 	q.jobs = filtered
 }
 

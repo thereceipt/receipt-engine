@@ -1,38 +1,37 @@
 package renderer
 
 import (
-	"fmt"
 	"os"
-	
+
 	"github.com/thereceipt/receipt-engine/pkg/receiptformat"
 )
 
 func (r *Renderer) renderText(cmd *receiptformat.Command) error {
 	text := cmd.Value
-	
+
 	// Get size - handle both int and potential float64 from JSON
 	size := float64(cmd.Size)
 	if size == 0 {
 		size = 32 // Default size (increased from 24)
 	}
-	
+
 	// Debug: log the size being used
 	if cmd.Size != 0 {
-		fmt.Printf("DEBUG: Using font size %f (from cmd.Size=%d)\n", size, cmd.Size)
+		// Debug: Using font size (removed to avoid TUI interference)
 	} else {
-		fmt.Printf("DEBUG: Using default font size %f (cmd.Size was 0)\n", size)
+		// Debug: Using default font size (removed to avoid TUI interference)
 	}
-	
+
 	weight := cmd.Weight
 	if weight == "" {
 		weight = "normal"
 	}
-	
+
 	align := cmd.Align
 	if align == "" {
 		align = "left"
 	}
-	
+
 	// Load font with the specified size
 	// If no font_family is specified, use "default"
 	fontFamily := cmd.FontFamily
@@ -40,7 +39,7 @@ func (r *Renderer) renderText(cmd *receiptformat.Command) error {
 		fontFamily = "default"
 	}
 	fontPath := r.getFontPath(fontFamily, weight, cmd.Italic)
-	
+
 	// Always try to load a font with the specified size
 	// If the preferred font fails, fall back to system fonts
 	loaded := false
@@ -48,10 +47,10 @@ func (r *Renderer) renderText(cmd *receiptformat.Command) error {
 		if err := r.ctx.LoadFontFace(fontPath, size); err == nil {
 			loaded = true
 		} else {
-			fmt.Printf("Warning: failed to load font %s at size %f: %v\n", fontPath, size, err)
+			// Warning: failed to load font - will fall back to system font
 		}
 	}
-	
+
 	// If preferred font didn't load, try system fonts
 	if !loaded {
 		systemFonts := []string{
@@ -69,13 +68,13 @@ func (r *Renderer) renderText(cmd *receiptformat.Command) error {
 			}
 		}
 		if !loaded {
-			fmt.Printf("Warning: could not load any font at size %f, text may appear at wrong size\n", size)
+			// Warning: could not load any font - using system default
 		}
 	}
-	
+
 	// Measure text
 	textWidth, textHeight := r.ctx.MeasureString(text)
-	
+
 	// Calculate X position based on alignment
 	var x float64
 	switch align {
@@ -86,16 +85,16 @@ func (r *Renderer) renderText(cmd *receiptformat.Command) error {
 	default: // left
 		x = 5
 	}
-	
+
 	// Ensure we have enough height
 	r.ensureHeight(int(textHeight) + 20)
-	
+
 	// Draw text
 	r.ctx.DrawString(text, x, r.y+textHeight)
-	
+
 	// Move Y position
 	r.y += textHeight + 10
-	
+
 	return nil
 }
 
@@ -104,7 +103,7 @@ func (r *Renderer) getFontPath(family, weight string, italic bool) string {
 	if weight == "normal" {
 		weight = "regular"
 	}
-	
+
 	// Check if receipt has custom fonts defined
 	if r.receipt != nil && len(r.receipt.Fonts) > 0 {
 		// Fonts is a map[string]FontFamily, key is the family name
@@ -114,20 +113,20 @@ func (r *Renderer) getFontPath(family, weight string, italic bool) string {
 				for _, fw := range fontFamily.Weights {
 					matchesWeight := weight == "" || fw.Weight == weight
 					matchesItalic := fw.Italic == italic
-					
+
 					if matchesWeight && matchesItalic {
 						return fw.Path
 					}
 				}
 			}
-			
+
 			// For variable fonts, or if no matching weight found, use the main path
 			if fontFamily.Path != "" {
 				return fontFamily.Path
 			}
 		}
 	}
-	
+
 	// Fallback to system fonts
 	fontPaths := []string{
 		"/System/Library/Fonts/Helvetica.ttc",
@@ -136,13 +135,13 @@ func (r *Renderer) getFontPath(family, weight string, italic bool) string {
 		"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
 		"C:\\Windows\\Fonts\\arial.ttf",
 	}
-	
+
 	for _, path := range fontPaths {
 		if _, err := os.Stat(path); err == nil {
 			return path
 		}
 	}
-	
+
 	// Last resort: use gg default
 	return ""
 }
@@ -152,10 +151,10 @@ func (r *Renderer) renderFeed(cmd *receiptformat.Command) error {
 	if lines == 0 {
 		lines = 1
 	}
-	
+
 	lineHeight := 20.0
 	r.y += float64(lines) * lineHeight
-	
+
 	return nil
 }
 
@@ -164,6 +163,6 @@ func (r *Renderer) renderCut(cmd *receiptformat.Command) error {
 	// No visual divider needed
 	r.ensureHeight(20)
 	r.y += 20
-	
+
 	return nil
 }

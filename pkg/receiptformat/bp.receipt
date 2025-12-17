@@ -1,0 +1,72 @@
+{
+  "version": "1.0",
+  "name": "Untitled Receipt",
+  "created_with": "Red - Receipt Editor",
+  "paper_width": "80mm",
+  "commands": [
+    {
+      "type": "item",
+      "left_side": [
+        {
+          "type": "text",
+          "value": "URBAN NIGHTS SRL",
+          "size": 20,
+          "weight": "normal",
+          "align": "left"
+        }
+      ],
+      "right_side": [
+        {
+          "type": "text",
+          "value": "BEACH PLEASE FESTIVAL",
+          "size": 20,
+          "weight": "normal",
+          "align": "right"
+        }
+      ]
+    },
+    {
+      "type": "item",
+      "left_side": [
+        {
+          "type": "text",
+          "value": "VIP - 5 DAY PASS",
+          "size": 40,
+          "weight": "bold",
+          "align": "left"
+        },
+        {
+          "type": "text",
+          "value": "invitatie",
+          "font_family": "default",
+          "size": 20,
+          "weight": "normal",
+          "italic": false,
+          "align": "left"
+        }
+      ],
+      "right_side": [
+        {
+          "type": "qrcode",
+          "value": "beach-please.ro",
+          "size": 6,
+          "error_correction": "M"
+        }
+      ],
+      "width_ratio": "3:1",
+      "show_divider": false,
+      "divider_style": "solid"
+    },
+    {
+      "type": "feed",
+      "lines": 3
+    },
+    {
+      "type": "cut"
+    },
+    {
+      "type": "align",
+      "value": "right"
+    }
+  ]
+}

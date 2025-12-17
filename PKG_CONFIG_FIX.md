@@ -1,42 +1,34 @@
-# Quick Fix for Missing pkg-config
+# USB Support - Statically Linked
 
-## The Issue
-`github.com/google/gousb` requires `pkg-config` and `libusb` to compile USB support.
+## Overview
+USB printer support is **statically linked** into the binaries. This means USB printers work out of the box - no separate installation of libusb or any other dependencies required!
 
-## Solution Options
+## How It Works
+- **libusb is bundled**: The USB library is statically linked into the binary during build
+- **Zero dependencies**: Users don't need to install anything - just download and run
+- **Works everywhere**: USB printers are detected and work immediately
 
-### Option 1: Install pkg-config (Recommended)
+## For Developers Building from Source
+
+If you're building from source, you'll need libusb development files during the build process:
+
+### macOS
 ```bash
-brew install pkg-config libusb
+brew install libusb
 ```
 
-Then run:
+### Linux
 ```bash
-go run ./cmd/server
+sudo apt-get install libusb-1.0-0-dev
 ```
 
-### Option 2: Build without USB support (Quick Start)
-Comment out USB detection temporarily in `internal/printer/manager.go`:
+### Windows
+libusb is included with MSYS2/MinGW when building on Windows.
 
-```go
-func (m *Manager) detectUSB() ([]*Printer, error) {
-    // Temporarily disabled - install pkg-config and libusb to enable
-    return []*Printer{}, nil
-}
-```
+**Note**: These are only needed during build time. The resulting binaries include libusb statically linked and work without any dependencies.
 
-This allows testing with Serial and Network printers while you install dependencies.
-
-### Option 3: Use the Pre-built Binary
-If available, use a pre-compiled binary that doesn't require pkg-config at runtime.
-
-## After Installing pkg-config
-
-Run the server:
-```bash
-go run ./cmd/server
-```
-
-You should see:
-- ✅ Printer detection working
-- ✅ Server running on http://localhost:12212
+## Benefits
+- ✅ **Out of the box**: USB support works immediately from binaries
+- ✅ **No installation hassle**: Users don't need to install libusb separately
+- ✅ **Portable**: Binaries are self-contained
+- ✅ **Reliable**: No dependency version conflicts

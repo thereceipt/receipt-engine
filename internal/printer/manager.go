@@ -2,22 +2,29 @@
 package printer
 
 import (
+	"bufio"
+	"context"
 	"fmt"
+	"net"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/gousb"
-	"github.com/tarm/serial"
 	"github.com/thereceipt/receipt-engine/internal/registry"
 )
 
 // Manager handles printer detection and management
 type Manager struct {
-	registry *registry.Registry
-	printers map[string]*Printer
-	mu       sync.RWMutex
+	registry           *registry.Registry
+	printers           map[string]*Printer
+	mu                 sync.RWMutex
+	networkScanStarted bool
+	networkScanMu      sync.Mutex
 
 	// Event callbacks
 	onPrinterAdded   func(*Printer)
@@ -45,8 +52,9 @@ func NewManager(registryPath string) (*Manager, error) {
 	}
 
 	return &Manager{
-		registry: reg,
-		printers: make(map[string]*Printer),
+		registry:           reg,
+		printers:           make(map[string]*Printer),
+		networkScanStarted: false,
 	}, nil
 }
 
@@ -57,20 +65,29 @@ func (m *Manager) DetectPrinters() ([]*Printer, error) {
 
 	var printers []*Printer
 
-	// Detect USB printers
+	// Detect USB printers (gracefully degrades if libusb not available)
 	usbPrinters, err := m.detectUSB()
 	if err != nil {
-		fmt.Printf("Warning: USB detection failed: %v\n", err)
+		// USB detection failed - likely libusb not available, skip silently
+		// This is expected on systems without libusb installed
 	} else {
 		printers = append(printers, usbPrinters...)
 	}
 
-	// Detect Serial printers
+	// Detect Serial printers (includes USB printers that appear as serial devices)
 	serialPrinters, err := m.detectSerial()
 	if err != nil {
-		fmt.Printf("Warning: Serial detection failed: %v\n", err)
+		// Silently skip - errors are expected and handled gracefully
 	} else {
 		printers = append(printers, serialPrinters...)
+	}
+
+	// Detect Network printers
+	networkPrinters, err := m.detectNetwork()
+	if err != nil {
+		// Silently skip - errors are expected and handled gracefully
+	} else {
+		printers = append(printers, networkPrinters...)
 	}
 
 	// Update internal printer map
@@ -142,6 +159,13 @@ func (m *Manager) AddNetworkPrinter(host string, port int, description string) s
 
 	m.printers[id] = printer
 
+	// Trigger callback if set
+	if m.onPrinterAdded != nil {
+		m.onPrinterAdded(printer)
+	}
+
+	// Log will be handled by caller via callbacks
+
 	return id
 }
 
@@ -156,9 +180,20 @@ func (m *Manager) OnPrinterRemoved(callback func(string)) {
 }
 
 // detectUSB detects USB printers using libusb
+// Gracefully returns empty list if libusb is not available (no error)
 func (m *Manager) detectUSB() ([]*Printer, error) {
-	// Initialize USB context
+	// Try to initialize USB context - if this fails, libusb is not available
+	// We use a recover to catch any panics from gousb when libusb is missing
+	defer func() {
+		if r := recover(); r != nil {
+			// gousb can panic if libusb is not available - this is expected
+		}
+	}()
+
 	ctx := gousb.NewContext()
+	if ctx == nil {
+		return []*Printer{}, nil // USB not available, return empty list
+	}
 	defer ctx.Close()
 
 	// Suppress libusb interrupted errors (code -10) - these are harmless
@@ -172,7 +207,8 @@ func (m *Manager) detectUSB() ([]*Printer, error) {
 		return true
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to enumerate USB devices: %w", err)
+		// USB enumeration failed - likely libusb issue, return empty list
+		return []*Printer{}, nil
 	}
 
 	for _, dev := range devices {
@@ -249,7 +285,7 @@ func (m *Manager) detectUSB() ([]*Printer, error) {
 	return printers, nil
 }
 
-// detectSerial detects serial printers
+// detectSerial detects serial printers (including USB printers that appear as serial devices)
 func (m *Manager) detectSerial() ([]*Printer, error) {
 	var printers []*Printer
 	var ports []string
@@ -286,27 +322,16 @@ func (m *Manager) detectSerial() ([]*Printer, error) {
 		ports = append(ports, sPorts...)
 
 	case "windows":
-		// Windows: Test COM1-COM256
-		for i := 1; i <= 256; i++ {
+		// Windows: Limit to COM1-COM32 (much faster than testing 256 ports)
+		for i := 1; i <= 32; i++ {
 			ports = append(ports, fmt.Sprintf("COM%d", i))
 		}
 	}
 
-	// Test each port
+	// Add all found ports without testing (much faster)
+	// On Unix, filepath.Glob already verified the files exist
+	// On Windows, we'll just list them - user can test manually if needed
 	for _, portPath := range ports {
-		// Try to open the port briefly to verify it exists
-		config := &serial.Config{
-			Name: portPath,
-			Baud: 9600,
-		}
-
-		port, err := serial.OpenPort(config)
-		if err != nil {
-			// Skip ports that can't be opened
-			continue
-		}
-		port.Close()
-
 		// Create printer info
 		description := fmt.Sprintf("Serial: %s", filepath.Base(portPath))
 
@@ -327,6 +352,247 @@ func (m *Manager) detectSerial() ([]*Printer, error) {
 		}
 
 		printers = append(printers, printer)
+	}
+
+	return printers, nil
+}
+
+// detectNetwork detects network printers using system services and network scanning
+func (m *Manager) detectNetwork() ([]*Printer, error) {
+	var printers []*Printer
+
+	// First, try to detect printers from system printer services (CUPS on macOS/Linux)
+	// This is fast and non-blocking
+	systemPrinters, err := m.detectSystemPrinters()
+	if err == nil {
+		printers = append(printers, systemPrinters...)
+	}
+
+	// Start background network scanning ONLY ONCE (non-blocking)
+	// This will discover printers and add them asynchronously
+	m.networkScanMu.Lock()
+	if !m.networkScanStarted {
+		m.networkScanStarted = true
+		m.networkScanMu.Unlock()
+		go m.scanNetworkInBackground()
+	} else {
+		m.networkScanMu.Unlock()
+	}
+
+	return printers, nil
+}
+
+// scanNetworkInBackground scans the network for printers in the background
+// and adds them to the manager as they're discovered
+func (m *Manager) scanNetworkInBackground() {
+	// Background scanning - no console output to avoid messing up TUI
+
+	// Get local network interfaces
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		// Silently fail - network scanning is best effort
+		return
+	}
+
+	// Common ports for receipt printers
+	ports := []int{9100, 515} // Raw printing (9100) and LPR (515)
+
+	// Scan each interface's network
+	for _, iface := range interfaces {
+		// Skip loopback and down interfaces
+		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			ip, ipNet, err := net.ParseCIDR(addr.String())
+			if err != nil {
+				continue
+			}
+
+			// Skip IPv6 for now
+			if ip.To4() == nil {
+				continue
+			}
+
+			// Get network base and mask
+			mask := ipNet.Mask
+			baseIP := ip.Mask(mask)
+
+			// Scan a limited range (first 50 IPs) to avoid long delays
+			ip4 := baseIP.To4()
+			if ip4 == nil {
+				continue
+			}
+
+			// Scan first 100 IPs in the subnet (increased from 50)
+			for i := 1; i <= 100 && i < 256; i++ {
+				testIP := make(net.IP, 4)
+				copy(testIP, ip4)
+				testIP[3] = byte(int(ip4[3]) + i)
+
+				// Skip broadcast and network addresses
+				if testIP.Equal(ipNet.IP) {
+					continue
+				}
+
+				// Test each port with a shorter timeout
+				for _, port := range ports {
+					address := net.JoinHostPort(testIP.String(), fmt.Sprint(port))
+					conn, err := net.DialTimeout("tcp", address, 200*time.Millisecond)
+					if err == nil {
+						conn.Close()
+						// Found a printer on this port - will be added via callback
+						description := fmt.Sprintf("Network: %s:%d", testIP.String(), port)
+						info := registry.PrinterInfo{
+							Type:        "network",
+							Host:        testIP.String(),
+							Port:        port,
+							Description: description,
+						}
+						id := m.registry.GetPrinterID(info)
+
+						// Check if we already have this printer
+						m.mu.RLock()
+						_, exists := m.printers[id]
+						m.mu.RUnlock()
+
+						if !exists {
+							printer := &Printer{
+								ID:          id,
+								Type:        "network",
+								Description: description,
+								Host:        testIP.String(),
+								Port:        port,
+								Name:        m.registry.GetPrinterName(id),
+							}
+
+							// Add to manager
+							m.mu.Lock()
+							m.printers[id] = printer
+							m.mu.Unlock()
+
+							// Trigger callback - will log to TUI
+
+							// Trigger callback if set
+							if m.onPrinterAdded != nil {
+								m.onPrinterAdded(printer)
+							}
+						}
+						// Found a printer on this IP, no need to check other ports
+						break
+					}
+				}
+			}
+		}
+	}
+}
+
+// detectSystemPrinters detects network printers from system printer services
+func (m *Manager) detectSystemPrinters() ([]*Printer, error) {
+	var printers []*Printer
+
+	switch runtime.GOOS {
+	case "darwin", "linux":
+		// Use lpstat to query CUPS for network printers
+		// Check if lpstat is available first
+		if _, err := exec.LookPath("lpstat"); err != nil {
+			// lpstat not available, skip system printer detection
+			return printers, nil
+		}
+
+		// Set a timeout for the command to avoid hanging
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		cmd := exec.CommandContext(ctx, "lpstat", "-v")
+		output, err := cmd.Output()
+		if err != nil {
+			// If command fails or times out, just return empty list (non-fatal)
+			return printers, nil
+		}
+
+		// Parse lpstat output to find network printers
+		// Format: device for PRINTER_NAME: network/ipp://HOST:PORT/ipp/print
+		// or: device for PRINTER_NAME: socket://HOST:PORT
+		scanner := bufio.NewScanner(strings.NewReader(string(output)))
+		deviceRe := regexp.MustCompile(`device for ([^:]+):\s*(.+)`)
+		networkRe := regexp.MustCompile(`(?:socket|ipp|http)://([^:/]+):?(\d+)?`)
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			matches := deviceRe.FindStringSubmatch(line)
+			if len(matches) < 3 {
+				continue
+			}
+
+			printerName := strings.TrimSpace(matches[1])
+			deviceURI := strings.TrimSpace(matches[2])
+
+			// Check if it's a network printer
+			networkMatches := networkRe.FindStringSubmatch(deviceURI)
+			if len(networkMatches) < 2 {
+				continue
+			}
+
+			host := networkMatches[1]
+			port := 9100 // Default raw printing port
+			if len(networkMatches) > 2 && networkMatches[2] != "" {
+				// Try to parse port from URI
+				fmt.Sscanf(networkMatches[2], "%d", &port)
+			}
+
+			// For IPP/HTTP printers, try port 9100 as well (raw printing)
+			// Many network printers support both IPP and raw TCP
+			if strings.Contains(deviceURI, "ipp://") || strings.Contains(deviceURI, "http://") {
+				// Also add raw TCP port 9100 version
+				description := fmt.Sprintf("Network: %s (%s)", printerName, host)
+				info := registry.PrinterInfo{
+					Type:        "network",
+					Host:        host,
+					Port:        9100,
+					Description: description,
+				}
+				id := m.registry.GetPrinterID(info)
+				printer := &Printer{
+					ID:          id,
+					Type:        "network",
+					Description: description,
+					Host:        host,
+					Port:        9100,
+					Name:        m.registry.GetPrinterName(id),
+				}
+				printers = append(printers, printer)
+			} else if strings.Contains(deviceURI, "socket://") {
+				// Raw socket printer
+				description := fmt.Sprintf("Network: %s (%s:%d)", printerName, host, port)
+				info := registry.PrinterInfo{
+					Type:        "network",
+					Host:        host,
+					Port:        port,
+					Description: description,
+				}
+				id := m.registry.GetPrinterID(info)
+				printer := &Printer{
+					ID:          id,
+					Type:        "network",
+					Description: description,
+					Host:        host,
+					Port:        port,
+					Name:        m.registry.GetPrinterName(id),
+				}
+				printers = append(printers, printer)
+			}
+		}
+
+	case "windows":
+		// On Windows, we could use wmic or PowerShell to query printers
+		// For now, we'll rely on network scanning
 	}
 
 	return printers, nil

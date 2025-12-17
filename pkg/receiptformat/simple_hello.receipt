@@ -1,0 +1,32 @@
+{
+  "version": "1.0",
+  "name": "Simple Hello",
+  "description": "A simple hello world receipt template",
+  "created_with": "V0 Pure Studio",
+  "commands": [
+    {
+      "type": "text",
+      "value": "Hello, World!",
+      "weight": "bold",
+      "size": 32,
+      "align": "center"
+    },
+    {
+      "type": "feed",
+      "lines": 2
+    },
+    {
+      "type": "text",
+      "value": "Welcome to V0 Pure Studio",
+      "size": 20,
+      "align": "center"
+    },
+    {
+      "type": "feed",
+      "lines": 3
+    },
+    {
+      "type": "cut"
+    }
+  ]
+}

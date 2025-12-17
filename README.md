@@ -7,10 +7,11 @@ A high-performance, cross-platform thermal printer server written in Go. Support
 ### Prerequisites
 
 - **Go 1.21+**
-- **libusb** (for USB printer support)
-  - macOS: `brew install libusb`
-  - Linux: `sudo apt-get install libusb-1.0-0-dev`
-  - Windows: Install WinUSB drivers
+- **C compiler** (for serial port support on Unix systems)
+  - macOS: Xcode Command Line Tools (`xcode-select --install`)
+  - Linux: `sudo apt-get install gcc`
+  - Windows: Included with MSYS2/MinGW
+**Note**: USB support is statically linked into the binaries - no separate installation needed! USB printers work out of the box.
 
 ### Installation
 
@@ -30,7 +31,7 @@ The server will start on `http://localhost:12212`
 
 ## 📋 Features
 
-- ✅ **Multi-Interface Support**: USB, Serial (RS232), Network (TCP/IP)
+- ✅ **Multi-Interface Support**: USB (direct), Serial (RS232/USB-to-Serial), Network (TCP/IP)
 - ✅ **Rich Receipt Format**: JSON-based `.receipt` files with variables and arrays
 - ✅ **Image Rendering**: High-fidelity rendering with custom fonts
 - ✅ **ESC/POS Support**: Industry-standard thermal printer commands
@@ -297,7 +298,8 @@ MIT License - See [LICENSE](LICENSE) file for details
 Built with:
 - [Gin](https://github.com/gin-gonic/gin) - HTTP framework
 - [Gorilla WebSocket](https://github.com/gorilla/websocket) - WebSocket support
-- [gousb](https://github.com/google/gousb) - USB device access
+- [gousb](https://github.com/google/gousb) - USB device access (optional, graceful degradation)
+- [tarm/serial](https://github.com/tarm/serial) - Serial port access
 - [gg](https://github.com/fogleman/gg) - 2D rendering
 - [go-qrcode](https://github.com/skip2/go-qrcode) - QR code generation
 

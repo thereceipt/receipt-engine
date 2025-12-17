@@ -18,6 +18,7 @@ type USBConnection struct {
 }
 
 // ConnectUSB connects to a USB printer
+// Returns error if USB support is not available (libusb not installed)
 func ConnectUSB(vid, pid uint16) (*USBConnection, error) {
 	ctx := gousb.NewContext()
 	
@@ -84,32 +85,32 @@ func ConnectUSB(vid, pid uint16) (*USBConnection, error) {
 			cfgDesc, exists := desc.Configs[activeCfg]
 			if exists {
 				for _, ifaceDesc := range cfgDesc.Interfaces {
-				ifaceNum := ifaceDesc.Number
-				iface, err := cfg.Interface(ifaceNum, 0)
-				if err == nil {
-					// Find OUT endpoint
-					var outEndpoint *gousb.OutEndpoint
-					for _, epDesc := range iface.Setting.Endpoints {
-						if epDesc.Direction == gousb.EndpointDirectionOut {
-							ep, err := iface.OutEndpoint(epDesc.Number)
-							if err == nil {
-								outEndpoint = ep
-								break
+					ifaceNum := ifaceDesc.Number
+					iface, err := cfg.Interface(ifaceNum, 0)
+					if err == nil {
+						// Find OUT endpoint
+						var outEndpoint *gousb.OutEndpoint
+						for _, epDesc := range iface.Setting.Endpoints {
+							if epDesc.Direction == gousb.EndpointDirectionOut {
+								ep, err := iface.OutEndpoint(epDesc.Number)
+								if err == nil {
+									outEndpoint = ep
+									break
+								}
 							}
 						}
-					}
-					if outEndpoint != nil {
-						conn := &USBConnection{
-							device:   dev,
-							iface:    iface,
-							endpoint: outEndpoint,
+						if outEndpoint != nil {
+							conn := &USBConnection{
+								device:   dev,
+								iface:    iface,
+								endpoint: outEndpoint,
+							}
+							return conn, nil
 						}
-						return conn, nil
+						iface.Close()
 					}
-					iface.Close()
 				}
-			}
-			cfg.Close()
+				cfg.Close()
 			}
 		}
 	}

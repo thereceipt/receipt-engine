@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
-	
+
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/thereceipt/receipt-engine/internal/parser"
@@ -39,18 +39,18 @@ type WSClient struct {
 func (s *Server) handleWebSocket(c *gin.Context) {
 	conn, err := s.upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		fmt.Printf("WebSocket upgrade failed: %v\n", err)
+		// WebSocket upgrade failed - error returned to caller
 		return
 	}
-	
+
 	client := &WSClient{
 		conn:   conn,
 		send:   make(chan WSMessage, 256),
 		server: s,
 	}
-	
-	fmt.Println("📡 WebSocket client connected")
-	
+
+	// WebSocket client connected - can be logged by caller if needed
+
 	// Start goroutines
 	go client.readPump()
 	go client.writePump()
@@ -58,14 +58,14 @@ func (s *Server) handleWebSocket(c *gin.Context) {
 
 func (c *WSClient) writePump() {
 	defer c.conn.Close()
-	
+
 	for msg := range c.send {
 		c.mu.Lock()
 		err := c.conn.WriteJSON(msg)
 		c.mu.Unlock()
-		
+
 		if err != nil {
-			fmt.Printf("WebSocket write error: %v\n", err)
+			// WebSocket write error - connection may be closed
 			return
 		}
 	}
@@ -87,11 +87,11 @@ func (c *WSClient) handlePrintEvent(data map[string]interface{}) {
 		c.sendError("printer_id is required")
 		return
 	}
-	
+
 	// Load receipt from path/URL if provided, otherwise use direct receipt
 	var receipt *receiptformat.Receipt
 	var err error
-	
+
 	// Check for receipt_url first
 	if receiptURL, ok := data["receipt_url"].(string); ok && receiptURL != "" {
 		receipt, err = loadReceiptFromPathOrURL(receiptURL)
@@ -119,19 +119,19 @@ func (c *WSClient) handlePrintEvent(data map[string]interface{}) {
 		c.sendError("receipt, receipt_path, or receipt_url is required")
 		return
 	}
-	
+
 	// Validate
 	if err := receiptformat.Validate(receipt); err != nil {
 		c.sendError(fmt.Sprintf("receipt validation failed: %v", err))
 		return
 	}
-	
+
 	// Parse variable data
 	var variableData map[string]interface{}
 	if vd, ok := data["variableData"]; ok {
 		variableData, _ = vd.(map[string]interface{})
 	}
-	
+
 	var variableArrayData map[string][]map[string]interface{}
 	if vad, ok := data["variableArrayData"]; ok {
 		// Convert from interface{} to proper type
@@ -150,37 +150,37 @@ func (c *WSClient) handlePrintEvent(data map[string]interface{}) {
 			}
 		}
 	}
-	
+
 	// Create parser
 	paperWidth := receipt.PaperWidth
 	if paperWidth == "" {
 		paperWidth = "80mm"
 	}
-	
+
 	p, err := parser.New(receipt, paperWidth)
 	if err != nil {
 		c.sendError(fmt.Sprintf("failed to create parser: %v", err))
 		return
 	}
-	
+
 	if variableData != nil {
 		p.SetVariableData(variableData)
 	}
-	
+
 	if variableArrayData != nil {
 		p.SetVariableArrayData(variableArrayData)
 	}
-	
+
 	// Execute
 	img, err := p.Execute()
 	if err != nil {
 		c.sendError(fmt.Sprintf("failed to render receipt: %v", err))
 		return
 	}
-	
+
 	// Enqueue print job
 	jobID := c.server.queue.Enqueue(printerID, img)
-	
+
 	c.sendResponse(map[string]interface{}{
 		"success": true,
 		"job_id":  jobID,
@@ -216,21 +216,21 @@ func (c *WSClient) readPump() {
 	defer func() {
 		removeClient(c)
 		c.conn.Close()
-		fmt.Println("📡 WebSocket client disconnected")
+		// WebSocket client disconnected
 	}()
-	
+
 	addClient(c)
-	
+
 	for {
 		var msg WSMessage
 		err := c.conn.ReadJSON(&msg)
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				fmt.Printf("WebSocket error: %v\n", err)
+				// WebSocket error - connection closed
 			}
 			break
 		}
-		
+
 		c.handleMessage(&msg)
 	}
 }
@@ -248,7 +248,7 @@ func (c *WSClient) sendError(message string) {
 func (s *Server) BroadcastPrinterAdded(printer *printer.Printer) {
 	clientsMu.RLock()
 	defer clientsMu.RUnlock()
-	
+
 	message := WSMessage{
 		Event: EventPrinterAdded,
 		Data: map[string]interface{}{
@@ -258,7 +258,7 @@ func (s *Server) BroadcastPrinterAdded(printer *printer.Printer) {
 			"name":        printer.Name,
 		},
 	}
-	
+
 	for client := range clients {
 		select {
 		case client.send <- message:
@@ -266,22 +266,22 @@ func (s *Server) BroadcastPrinterAdded(printer *printer.Printer) {
 			// Client send buffer full, skip
 		}
 	}
-	
-	fmt.Printf("📡 Broadcast: Printer added - %s\n", printer.Description)
+
+	// Broadcast printer added - handled by callbacks
 }
 
 // BroadcastPrinterRemoved broadcasts a printer removed event to all connected clients
 func (s *Server) BroadcastPrinterRemoved(printerID string) {
 	clientsMu.RLock()
 	defer clientsMu.RUnlock()
-	
+
 	message := WSMessage{
 		Event: EventPrinterRemoved,
 		Data: map[string]interface{}{
 			"id": printerID,
 		},
 	}
-	
+
 	for client := range clients {
 		select {
 		case client.send <- message:
@@ -289,6 +289,6 @@ func (s *Server) BroadcastPrinterRemoved(printerID string) {
 			// Client send buffer full, skip
 		}
 	}
-	
-	fmt.Printf("📡 Broadcast: Printer removed - %s\n", printerID)
+
+	// Broadcast printer removed - handled by callbacks
 }

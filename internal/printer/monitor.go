@@ -2,7 +2,6 @@ package printer
 
 import (
 	"context"
-	"fmt"
 	"time"
 )
 
@@ -17,7 +16,7 @@ type Monitor struct {
 // NewMonitor creates a new printer monitor
 func NewMonitor(manager *Manager, interval time.Duration) *Monitor {
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	return &Monitor{
 		manager:  manager,
 		interval: interval,
@@ -30,11 +29,11 @@ func NewMonitor(manager *Manager, interval time.Duration) *Monitor {
 func (m *Monitor) Start() {
 	// Store initial state
 	previousPrinters := make(map[string]*Printer)
-	
+
 	go func() {
 		ticker := time.NewTicker(m.interval)
 		defer ticker.Stop()
-		
+
 		for {
 			select {
 			case <-m.ctx.Done():
@@ -55,38 +54,36 @@ func (m *Monitor) checkChanges(previousPrinters map[string]*Printer) {
 	// Detect current printers
 	currentPrinters, err := m.manager.DetectPrinters()
 	if err != nil {
-		fmt.Printf("Warning: printer detection failed: %v\n", err)
+		// Silently skip - errors are expected and handled gracefully
 		return
 	}
-	
+
 	// Build current map
 	currentMap := make(map[string]*Printer)
 	for _, p := range currentPrinters {
 		currentMap[p.ID] = p
 	}
-	
+
 	// Find new printers
 	for id, printer := range currentMap {
 		if _, exists := previousPrinters[id]; !exists {
-			// New printer detected
-			fmt.Printf("🟢 Printer added: %s\n", printer.Description)
+			// New printer detected - callback will log to TUI
 			if m.manager.onPrinterAdded != nil {
 				m.manager.onPrinterAdded(printer)
 			}
 		}
 	}
-	
+
 	// Find removed printers
-	for id, printer := range previousPrinters {
+	for id := range previousPrinters {
 		if _, exists := currentMap[id]; !exists {
-			// Printer removed
-			fmt.Printf("🔴 Printer removed: %s\n", printer.Description)
+			// Printer removed - callback will log to TUI
 			if m.manager.onPrinterRemoved != nil {
 				m.manager.onPrinterRemoved(id)
 			}
 		}
 	}
-	
+
 	// Update previous state
 	for id := range previousPrinters {
 		delete(previousPrinters, id)

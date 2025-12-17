@@ -23,7 +23,7 @@ jobs:
             arch: amd64
             goos: linux
             goarch: amd64
-          # Linux ARM64: build via QEMU+Docker on ubuntu-latest (CGO + libusb doesn't cross-compile cleanly)
+          # Linux ARM64: build via QEMU+Docker on ubuntu-latest (CGO for serial port support)
           - os: ubuntu-latest
             arch: arm64
             goos: linux
@@ -57,7 +57,7 @@ jobs:
           sudo apt-get update
           # For linux/arm64 we build inside an arm64 container, so deps are installed there.
           if [ "${{ matrix.goarch }}" != "arm64" ]; then
-            sudo apt-get install -y libusb-1.0-0-dev gcc
+            sudo apt-get install -y libusb-1.0-0-dev gcc pkg-config build-essential
           fi
 
       - name: Set up QEMU (Linux ARM64)
@@ -67,16 +67,18 @@ jobs:
       - name: Install dependencies (macOS Intel)
         if: matrix.goos == 'darwin' && matrix.goarch == 'amd64'
         run: |
-          brew install libusb || true
           # Ensure we have the right toolchain
           xcode-select --install || true
+          # Install libusb for static linking
+          brew install libusb
 
       - name: Install dependencies (macOS ARM)
         if: matrix.goos == 'darwin' && matrix.goarch == 'arm64'
         run: |
-          brew install libusb || true
-          # For ARM64, ensure we're using native toolchain
-          arch -arm64 brew install libusb || brew install libusb || true
+          # Ensure we have the right toolchain
+          xcode-select --install || true
+          # Install libusb for static linking
+          brew install libusb
 
       - name: Build binary (Linux)
         if: matrix.goos == 'linux'
@@ -98,17 +100,20 @@ jobs:
           echo "GOOS=${GOOS} GOARCH=${GOARCH} CGO_ENABLED=${CGO_ENABLED} CC=${CC}"
 
           if [ "${{ matrix.goarch }}" == "arm64" ]; then
-            # Build in a linux/arm64 container (QEMU) so CGO links against native arm64 libusb.
+            # Build in a linux/arm64 container (QEMU) so CGO links against native arm64 libraries.
             docker run --rm --platform linux/arm64 \
               -v "$PWD":/src -w /src \
               -e VERSION="${VERSION}" \
               golang:1.24-bookworm \
               bash -c "set -e; export PATH=/usr/local/go/bin:\$PATH; \
-                       apt-get update && apt-get install -y libusb-1.0-0-dev gcc pkg-config; \
+                       apt-get update && apt-get install -y libusb-1.0-0-dev gcc pkg-config build-essential; \
                        OUTPUT_NAME='${OUTPUT_NAME}'; \
-                       /usr/local/go/bin/go build -buildvcs=false -v -ldflags \"-X main.Version=\$VERSION\" -o \"\$OUTPUT_NAME\" ./cmd/server"
+                       /usr/local/go/bin/go build -buildvcs=false -v -ldflags \"-linkmode external -extldflags '-Wl,-Bstatic -lusb-1.0 -Wl,-Bdynamic' -X main.Version=\$VERSION\" -o \"\$OUTPUT_NAME\" ./cmd/server"
           else
-            go build -buildvcs=false -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
+            # Statically link libusb for out-of-the-box USB support
+            # Use -Wl,-Bstatic to link libusb statically while keeping other libs dynamic
+            export CGO_LDFLAGS="-Wl,-Bstatic -lusb-1.0 -Wl,-Bdynamic"
+            go build -buildvcs=false -v -ldflags "-linkmode external -extldflags '-Wl,-Bstatic -lusb-1.0 -Wl,-Bdynamic' -X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
           fi
           
           # Verify binary was created
@@ -137,16 +142,15 @@ jobs:
           fi
           
           OUTPUT_NAME="receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}"
-
+          
+          # Get libusb paths for static linking
           LIBUSB_PREFIX=$(brew --prefix libusb 2>/dev/null || echo "/usr/local")
           export CGO_CFLAGS="-I${LIBUSB_PREFIX}/include"
           export CGO_LDFLAGS="-L${LIBUSB_PREFIX}/lib -lusb-1.0"
 
           echo "Building ${OUTPUT_NAME} with version ${VERSION}"
-          echo "LIBUSB_PREFIX=${LIBUSB_PREFIX}"
-          echo "CGO_CFLAGS=${CGO_CFLAGS}"
-          echo "CGO_LDFLAGS=${CGO_LDFLAGS}"
           echo "GOOS=${GOOS} GOARCH=${GOARCH} CGO_ENABLED=${CGO_ENABLED}"
+          echo "LIBUSB_PREFIX=${LIBUSB_PREFIX}"
 
           go build -buildvcs=false -v -ldflags "-X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
           
@@ -177,7 +181,7 @@ jobs:
           
           OUTPUT_NAME="receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}"
           
-          # Get libusb paths (try multiple locations)
+          # Get libusb paths for static linking
           LIBUSB_PREFIX=$(brew --prefix libusb 2>/dev/null || echo "/opt/homebrew")
           if [ ! -d "${LIBUSB_PREFIX}/include" ]; then
             # Try alternative locations
@@ -191,12 +195,10 @@ jobs:
           
           export CGO_CFLAGS="-I${LIBUSB_PREFIX}/include"
           export CGO_LDFLAGS="-L${LIBUSB_PREFIX}/lib -lusb-1.0"
-          
+
           echo "Building ${OUTPUT_NAME} with version ${VERSION}"
-          echo "LIBUSB_PREFIX=${LIBUSB_PREFIX}"
-          echo "CGO_CFLAGS=${CGO_CFLAGS}"
-          echo "CGO_LDFLAGS=${CGO_LDFLAGS}"
           echo "GOOS=${GOOS} GOARCH=${GOARCH} CGO_ENABLED=${CGO_ENABLED}"
+          echo "LIBUSB_PREFIX=${LIBUSB_PREFIX}"
           echo "CC=${CC}"
           
           # For ARM64, ensure we use native architecture
@@ -244,6 +246,7 @@ jobs:
           export CGO_ENABLED=1
           export CC=gcc
           export PKG_CONFIG_PATH="/mingw64/lib/pkgconfig"
+          export CGO_LDFLAGS="-L/mingw64/lib -lusb-1.0"
 
           pkg-config --cflags --libs libusb-1.0
           go version

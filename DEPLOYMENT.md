@@ -46,10 +46,13 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN go build -o receipt-engine ./cmd/server
+# Statically link libusb for out-of-the-box USB support
+ENV CGO_ENABLED=1
+ENV CGO_LDFLAGS="-Wl,-Bstatic -lusb-1.0 -Wl,-Bdynamic"
+RUN go build -ldflags "-linkmode external -extldflags '-Wl,-Bstatic -lusb-1.0 -Wl,-Bdynamic'" -o receipt-engine ./cmd/server
 
 FROM alpine:latest
-RUN apk add --no-cache libusb
+# No libusb needed - it's statically linked!
 
 COPY --from=builder /app/receipt-engine /usr/local/bin/
 
