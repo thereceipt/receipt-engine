@@ -57,7 +57,7 @@ jobs:
           sudo apt-get update
           # For linux/arm64 we build inside an arm64 container, so deps are installed there.
           if [ "${{ matrix.goarch }}" != "arm64" ]; then
-            sudo apt-get install -y libusb-1.0-0-dev gcc pkg-config build-essential
+            sudo apt-get install -y libusb-1.0-0-dev libudev-dev gcc pkg-config build-essential
           fi
 
       - name: Set up QEMU (Linux ARM64)
@@ -106,14 +106,15 @@ jobs:
               -e VERSION="${VERSION}" \
               golang:1.24-bookworm \
               bash -c "set -e; export PATH=/usr/local/go/bin:\$PATH; \
-                       apt-get update && apt-get install -y libusb-1.0-0-dev gcc pkg-config build-essential; \
+                       apt-get update && apt-get install -y libusb-1.0-0-dev libudev-dev gcc pkg-config build-essential; \
                        OUTPUT_NAME='${OUTPUT_NAME}'; \
-                       /usr/local/go/bin/go build -buildvcs=false -v -ldflags \"-linkmode external -extldflags '-Wl,-Bstatic -lusb-1.0 -Wl,-Bdynamic' -X main.Version=\$VERSION\" -o \"\$OUTPUT_NAME\" ./cmd/server"
+                       /usr/local/go/bin/go build -buildvcs=false -v -ldflags \"-linkmode external -extldflags '-Wl,-Bstatic -lusb-1.0 -Wl,-Bdynamic -ludev' -X main.Version=\$VERSION\" -o \"\$OUTPUT_NAME\" ./cmd/server"
           else
             # Statically link libusb for out-of-the-box USB support
             # Use -Wl,-Bstatic to link libusb statically while keeping other libs dynamic
-            export CGO_LDFLAGS="-Wl,-Bstatic -lusb-1.0 -Wl,-Bdynamic"
-            go build -buildvcs=false -v -ldflags "-linkmode external -extldflags '-Wl,-Bstatic -lusb-1.0 -Wl,-Bdynamic' -X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
+            # libusb-1.0 depends on libudev, so we need to link it dynamically
+            export CGO_LDFLAGS="-Wl,-Bstatic -lusb-1.0 -Wl,-Bdynamic -ludev"
+            go build -buildvcs=false -v -ldflags "-linkmode external -extldflags '-Wl,-Bstatic -lusb-1.0 -Wl,-Bdynamic -ludev' -X main.Version=${VERSION}" -o ${OUTPUT_NAME} ./cmd/server
           fi
           
           # Verify binary was created
