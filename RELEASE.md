@@ -55,8 +55,8 @@ Each release includes binaries for:
 2. Verify all platform binaries are attached
 3. Test downloading and running a binary:
    ```bash
-   wget https://github.com/thereceipt/receipt-engine/releases/download/v1.0.0/receipt-engine-linux-amd64
-   chmod +x receipt-engine-linux-amd64
+   wget https://github.com/thereceipt/receipt-engine/releases/download/v1.0.0/receipt-engine-linux-amd64.tar.gz
+   tar -xzf receipt-engine-linux-amd64.tar.gz
    ./receipt-engine-linux-amd64
    ```
 

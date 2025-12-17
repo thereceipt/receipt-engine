@@ -125,6 +125,12 @@ jobs:
           
           file ${OUTPUT_NAME}
           ls -lh ${OUTPUT_NAME}
+
+          # Package as tar.gz so executable permissions survive download/extract
+          # (linux/arm64 binary may be created by a container as root)
+          chmod +x "${OUTPUT_NAME}" || sudo chmod +x "${OUTPUT_NAME}"
+          tar -czf "${OUTPUT_NAME}.tar.gz" "${OUTPUT_NAME}"
+          ls -lh "${OUTPUT_NAME}.tar.gz"
           
           echo "BINARY_PATH=${OUTPUT_NAME}" >> $GITHUB_ENV
 
@@ -163,6 +169,11 @@ jobs:
           
           file ${OUTPUT_NAME}
           ls -lh ${OUTPUT_NAME}
+
+          # Package as tar.gz so executable permissions survive download/extract
+          chmod +x "${OUTPUT_NAME}"
+          tar -czf "${OUTPUT_NAME}.tar.gz" "${OUTPUT_NAME}"
+          ls -lh "${OUTPUT_NAME}.tar.gz"
           
           echo "BINARY_PATH=${OUTPUT_NAME}" >> $GITHUB_ENV
 
@@ -213,6 +224,11 @@ jobs:
           
           file ${OUTPUT_NAME}
           ls -lh ${OUTPUT_NAME}
+
+          # Package as tar.gz so executable permissions survive download/extract
+          chmod +x "${OUTPUT_NAME}"
+          tar -czf "${OUTPUT_NAME}.tar.gz" "${OUTPUT_NAME}"
+          ls -lh "${OUTPUT_NAME}.tar.gz"
           
           echo "BINARY_PATH=${OUTPUT_NAME}" >> $GITHUB_ENV
 
@@ -253,11 +269,21 @@ jobs:
           go version
           go build -buildvcs=false -v -ldflags "-X main.Version=${VERSION}" -o "${OUTPUT_NAME}" ./cmd/server
 
-      - name: Upload artifact
+      - name: Upload artifact (Windows)
+        if: matrix.goos == 'windows'
         uses: actions/upload-artifact@v4
         with:
           name: receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }}
+          path: receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}.exe
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload artifact (macOS/Linux tar.gz)
+        if: matrix.goos != 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: receipt-engine-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
           retention-days: 30
           if-no-files-found: error
 
@@ -318,23 +344,47 @@ jobs:
           body: |
             ## Receipt Engine ${{ steps.get_version.outputs.version }}
             
+            Cross-platform thermal printer server (HTTP + WebSocket API) for ESC/POS printers.
+            
             ### Downloads
             
-            - **Linux (amd64)**: `receipt-engine-linux-amd64`
-            - **Linux (arm64)**: `receipt-engine-linux-arm64`
-            - **macOS (Intel)**: `receipt-engine-darwin-amd64`
-            - **macOS (Apple Silicon)**: `receipt-engine-darwin-arm64`
+            - **Linux (amd64)**: `receipt-engine-linux-amd64.tar.gz`
+            - **Linux (arm64)**: `receipt-engine-linux-arm64.tar.gz`
+            - **macOS (Intel)**: `receipt-engine-darwin-amd64.tar.gz`
+            - **macOS (Apple Silicon)**: `receipt-engine-darwin-arm64.tar.gz`
             - **Windows (amd64)**: `receipt-engine-windows-amd64.exe`
             
-            ### Installation
-            
-            Download the binary for your platform, make it executable (Unix), and run:
+            ### Run
             
             ```bash
-            ./receipt-engine
+            # macOS/Linux: download the right *.tar.gz then:
+            tar -xzf receipt-engine-<os>-<arch>.tar.gz
+            ./receipt-engine-<os>-<arch>          # starts the server
             ```
             
-            The server will start on `http://localhost:12212`
+            Windows:
+            
+            ```powershell
+            .\receipt-engine-windows-amd64.exe
+            ```
+            
+            By default the server listens on `http://localhost:12212` (WebSocket: `ws://localhost:12212/ws`).
+            
+            ### API quick reference
+            
+            - `GET /health`
+            - `GET /printers`
+            - `POST /print`
+            - `GET /jobs`
+            - `GET /job/:id`
+            
+            ### Notes (macOS)
+            
+            If macOS blocks the binary (Gatekeeper), remove the quarantine attribute:
+            
+            ```bash
+            xattr -d com.apple.quarantine ./receipt-engine-darwin-arm64 2>/dev/null || true
+            ```
           files: |
             dist/receipt-engine-*
           draft: false
