@@ -134,23 +134,22 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Handle command bar first if visible - it has priority
+		// Handle command area first if visible - it has priority
 		if a.command.IsVisible() {
 			newCmd, cmd := a.command.Update(msg)
 			a.command = newCmd
-			// Always return early when command bar is visible to prevent other key processing
+			// Always return early when command area is visible to prevent other key processing
 			return a, cmd
 		}
 
-		// Global keys (only processed when command bar is not visible)
+		// Global keys (only processed when command area is not visible)
 		switch msg.String() {
 		case ":":
-			// Show command bar (vim-style)
+			// Show command line (vim-style)
 			if !a.printTab.inputFocused {
 				a.command.Show()
-				// Set size based on available width (account for padding)
-				contentWidth := a.width - 24 - 3 // sidebar + padding
-				a.command.SetSize(contentWidth)
+				a.command.SetSize(maxInt(20, a.width))
+				a.command.SetHeight(a.bottomAreaHeight())
 			}
 		case "ctrl+c", "q":
 			if a.command.IsVisible() {
@@ -160,43 +159,41 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, tea.Quit
 			}
 		case "1":
-			if !a.printTab.inputFocused && !a.command.IsVisible() {
+			if !a.printTab.inputFocused {
 				a.activeTab = TabPrinters
 			}
 		case "2":
-			if !a.printTab.inputFocused && !a.command.IsVisible() {
+			if !a.printTab.inputFocused {
 				a.activeTab = TabJobs
 			}
 		case "3":
-			if !a.printTab.inputFocused && !a.command.IsVisible() {
+			if !a.printTab.inputFocused {
 				a.activeTab = TabPrint
 			}
 		case "tab":
-			if !a.printTab.inputFocused && !a.command.IsVisible() {
+			if !a.printTab.inputFocused {
 				a.activeTab = (a.activeTab + 1) % 3
 			}
 		case "shift+tab":
-			if !a.printTab.inputFocused && !a.command.IsVisible() {
+			if !a.printTab.inputFocused {
 				a.activeTab = (a.activeTab + 2) % 3
 			}
 		}
 
-		// Delegate to active tab (only if command bar is not visible)
-		if !a.command.IsVisible() {
-			switch a.activeTab {
-			case TabPrinters:
-				newPrinters, cmd := a.printers.Update(msg)
-				a.printers = newPrinters
-				cmds = append(cmds, cmd)
-			case TabJobs:
-				newJobs, cmd := a.jobs.Update(msg)
-				a.jobs = newJobs
-				cmds = append(cmds, cmd)
-			case TabPrint:
-				newPrint, cmd := a.printTab.Update(msg)
-				a.printTab = newPrint
-				cmds = append(cmds, cmd)
-			}
+		// Delegate to active tab
+		switch a.activeTab {
+		case TabPrinters:
+			newPrinters, cmd := a.printers.Update(msg)
+			a.printers = newPrinters
+			cmds = append(cmds, cmd)
+		case TabJobs:
+			newJobs, cmd := a.jobs.Update(msg)
+			a.jobs = newJobs
+			cmds = append(cmds, cmd)
+		case TabPrint:
+			newPrint, cmd := a.printTab.Update(msg)
+			a.printTab = newPrint
+			cmds = append(cmds, cmd)
 		}
 
 	case tea.WindowSizeMsg:
@@ -204,16 +201,21 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.height = msg.Height
 		a.ready = true
 
-		// Update component sizes (account for sidebar and console)
 		sidebarWidth := 24
-		consoleHeight := 8
-		contentWidth := a.width - sidebarWidth - 3
-		contentHeight := a.height - consoleHeight - 4
+		contentWidth := a.width - sidebarWidth - 1
+		if contentWidth < 20 {
+			contentWidth = 20
+		}
+		contentHeight := a.height - a.bottomAreaHeight()
+		if contentHeight < 1 {
+			contentHeight = 1
+		}
 
 		a.printers.SetSize(contentWidth, contentHeight)
 		a.jobs.SetSize(contentWidth, contentHeight)
 		a.printTab.SetSize(contentWidth, contentHeight)
-		a.command.SetSize(contentWidth)
+		a.command.SetSize(a.width)
+		a.command.SetHeight(a.bottomAreaHeight())
 
 	case tickMsg:
 		// Refresh data asynchronously to avoid blocking UI
@@ -236,35 +238,36 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 
 	case tea.MouseMsg:
-		// Handle mouse events
-		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-			// Check if clicking on sidebar navigation
-			sidebarWidth := 24
-			if msg.X < sidebarWidth {
-				// Clicked in sidebar - check which tab
-				// Sidebar starts at line 0, tabs are at lines 5-7 (after logo and header)
-				clickY := msg.Y
-				if clickY >= 5 && clickY <= 7 {
-					tabIndex := clickY - 5
-					if tabIndex >= 0 && tabIndex < 3 {
-						a.activeTab = Tab(tabIndex)
-					}
-				}
-			}
+		// If the command area is visible, it owns the bottom area; otherwise ignore clicks there.
+		if msg.Y >= a.height-a.bottomAreaHeight() {
+			return a, nil
+		}
+
+		sidebarWidth := 24
+
+		// Translate mouse coords into the content pane (account for sidebar + ContentStyle padding).
+		translated := msg
+		translated.X = msg.X - sidebarWidth - 2 // sidebar + ContentStyle padding left
+		translated.Y = msg.Y - 1                // ContentStyle padding top
+		if translated.X < 0 {
+			translated.X = 0
+		}
+		if translated.Y < 0 {
+			translated.Y = 0
 		}
 
 		// Delegate mouse events to active tab
 		switch a.activeTab {
 		case TabPrinters:
-			newPrinters, cmd := a.printers.Update(msg)
+			newPrinters, cmd := a.printers.Update(translated)
 			a.printers = newPrinters
 			cmds = append(cmds, cmd)
 		case TabJobs:
-			newJobs, cmd := a.jobs.Update(msg)
+			newJobs, cmd := a.jobs.Update(translated)
 			a.jobs = newJobs
 			cmds = append(cmds, cmd)
 		case TabPrint:
-			newPrint, cmd := a.printTab.Update(msg)
+			newPrint, cmd := a.printTab.Update(translated)
 			a.printTab = newPrint
 			cmds = append(cmds, cmd)
 		}
@@ -276,44 +279,37 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // View renders the UI
 func (a *App) View() string {
 	if a.quitting {
-		return "\n  👋 Goodbye!\n\n"
+		return "\n  Goodbye!\n\n"
 	}
 
 	if !a.ready {
 		return "\n  Loading...\n"
 	}
 
-	// If command bar is visible, show it as an overlay
-	if a.command.IsVisible() {
-		return a.renderCommandOverlay()
-	}
-
 	sidebarWidth := 24
-	consoleHeight := 8
-	helpHeight := 1
-
-	// Calculate available height for main content area
-	availableHeight := a.height - consoleHeight - helpHeight
-
-	// Sidebar
-	sidebar := a.renderSidebar(sidebarWidth, availableHeight)
-
-	// Content
+	contentHeight := a.height - a.bottomAreaHeight()
+	if contentHeight < 1 {
+		contentHeight = 1
+	}
 	contentWidth := a.width - sidebarWidth - 1
-	contentHeight := availableHeight
+	if contentWidth < 20 {
+		contentWidth = 20
+	}
+	sidebar := a.renderSidebar(sidebarWidth, contentHeight)
 	content := a.renderContent(contentWidth, contentHeight)
-
-	// Top section: sidebar + content
 	top := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, content)
 
-	// Console at bottom
-	console := a.renderConsole(a.width, consoleHeight)
+	var bottom string
+	if a.command.IsVisible() {
+		// Bottom transforms into a terminal-like command area.
+		a.command.SetSize(a.width)
+		a.command.SetHeight(a.bottomAreaHeight())
+		bottom = a.renderCommandArea()
+	} else {
+		bottom = a.renderStatusBar()
+	}
 
-	// Help bar
-	help := a.renderHelp()
-
-	// Join all sections
-	fullView := lipgloss.JoinVertical(lipgloss.Left, top, console, help)
+	fullView := lipgloss.JoinVertical(lipgloss.Left, top, bottom)
 
 	// Ensure the view exactly fills the screen height to clear any leftover content
 	// Pad with spaces if needed to fill exactly a.height lines
@@ -329,49 +325,6 @@ func (a *App) View() string {
 	}
 
 	return strings.Join(lines, "\n")
-}
-
-func (a *App) renderCommandOverlay() string {
-	// Create a centered overlay for the command bar
-	// Use most of the screen but leave some margin
-	overlayWidth := a.width - 8
-	if overlayWidth < 60 {
-		overlayWidth = 60
-	}
-	overlayHeight := a.height - 6
-	if overlayHeight < 20 {
-		overlayHeight = 20
-	}
-	if overlayHeight > a.height-4 {
-		overlayHeight = a.height - 4
-	}
-
-	// Update command size to match overlay
-	a.command.SetSize(overlayWidth - 4)
-	a.command.SetHeight(overlayHeight - 2) // Account for border padding
-
-	commandView := a.command.View()
-
-	// Wrap the command view in a bordered box with fixed height
-	overlay := lipgloss.NewStyle().
-		Width(overlayWidth).
-		Height(overlayHeight).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(Secondary).
-		Background(BgCard).
-		Padding(1, 2).
-		Render(commandView)
-
-	// Center on screen
-	centered := lipgloss.Place(
-		a.width,
-		a.height,
-		lipgloss.Center,
-		lipgloss.Center,
-		overlay,
-	)
-
-	return centered
 }
 
 func (a *App) renderSidebar(width, height int) string {
@@ -407,68 +360,9 @@ func (a *App) renderSidebar(width, height int) string {
 		}
 	}
 
-	lines = append(lines, "")
-
-	// Stats section
-	lines = append(lines, TextMuted.Render(" STATUS"))
-	lines = append(lines, "")
-
-	printers, _ := a.manager.DetectPrinters()
-	jobs := a.queue.GetAllJobs()
-
-	// Count job statuses
-	queued, printing := 0, 0
-	for _, j := range jobs {
-		switch j.Status {
-		case "queued":
-			queued++
-		case "printing":
-			printing++
-		}
-	}
-
-	// Helper function to pad any line to fill sidebar width
-	// All lines should have the same format: " [text]" with padding to fill width
-	padSidebarLine := func(text string) string {
-		// Format with leading space to match nav items
-		formatted := " " + text
-		// Calculate padding - account for border (2 chars on right side)
-		// lipgloss.Width() strips ANSI codes, so this works for both styled and unstyled text
-		displayWidth := lipgloss.Width(formatted)
-		padding := width - displayWidth - 2 // -2 for border padding
-		if padding > 0 {
-			formatted += strings.Repeat(" ", padding)
-		}
-		return formatted
-	}
-
-	printerText := fmt.Sprintf("%d printers", len(printers))
-	lines = append(lines, padSidebarLine(printerText))
-	if queued > 0 {
-		queuedText := fmt.Sprintf("%d queued", queued)
-		// Pad the plain text first, then apply style
-		paddedQueued := padSidebarLine(queuedText)
-		lines = append(lines, WarningStyle.Render(paddedQueued))
-	}
-	if printing > 0 {
-		printingText := fmt.Sprintf("%d printing", printing)
-		paddedPrinting := padSidebarLine(printingText)
-		lines = append(lines, InfoStyle.Render(paddedPrinting))
-	}
-
-	// Uptime
-	uptime := time.Since(a.startTime)
-	hours := int(uptime.Hours())
-	minutes := int(uptime.Minutes()) % 60
-	uptimeText := fmt.Sprintf("%dh %dm", hours, minutes)
-	lines = append(lines, padSidebarLine(uptimeText))
-
-	// Join all lines
+	// Fill remaining space (no stats here anymore; those moved to statusline)
 	content := strings.Join(lines, "\n")
-
-	// Pad content to fill height
-	lineCount := len(lines)
-	for i := lineCount; i < height-2; i++ {
+	for lipgloss.Height(content) < height-2 {
 		content += "\n"
 	}
 
@@ -507,90 +401,130 @@ func (a *App) renderContent(width, height int) string {
 		Render(content)
 }
 
-func (a *App) renderConsole(width, height int) string {
-	var lines []string
+func (a *App) renderStatusBar() string {
+	// ASCII-only statusline (no powerline glyphs, no bullets).
+	// Design intent: stable, glanceable operational state, not navigation.
+	base := lipgloss.NewStyle().Background(BgCard).Foreground(colorTextNormal)
 
-	// Show last N logs - respect height exactly
-	maxLines := height - 2 // Account for border
-	if maxLines < 1 {
-		maxLines = 1
-	}
-
-	start := 0
-	if len(a.logs) > maxLines {
-		start = len(a.logs) - maxLines
-	}
-
-	for i := start; i < len(a.logs); i++ {
-		log := a.logs[i]
-		timeStr := log.time.Format("15:04:05")
-
-		var icon string
-		var style lipgloss.Style
-		switch log.level {
-		case "error":
-			icon = "✗"
-			style = ErrorStyle
-		case "warning":
-			icon = "⚠"
-			style = WarningStyle
-		case "success":
-			icon = "✓"
-			style = SuccessStyle
-		default:
-			icon = "›"
-			style = TextMuted
+	seg := func(text string, fg, bg lipgloss.Color, bold bool) string {
+		s := lipgloss.NewStyle().Foreground(fg).Background(bg).Padding(0, 1)
+		if bold {
+			s = s.Bold(true)
 		}
+		return s.Render(text)
+	}
+	pipe := base.Render(" | ")
 
-		line := fmt.Sprintf(" %s %s %s", TextMuted.Render(timeStr), style.Render(icon), log.message)
-		lines = append(lines, Truncate(line, width-4))
+	// Mode (only indicates whether ':' command input is active)
+	modeText := "NAV"
+	modeBg := BgHover
+	if a.command.IsVisible() {
+		modeText = "CMD"
+		modeBg = Warning
+	}
+	mode := seg(modeText, colorTextBright, modeBg, true)
+
+	// Static app/runtime context (useful when running multiple instances).
+	port := seg("port "+a.port, colorTextBright, Primary, false)
+
+	// Printers count (never do slow I/O in View).
+	prCount := len(a.printers.printers)
+	pr := seg("printers "+itoa(prCount), colorTextBright, Secondary, true)
+
+	// Queue/printing counts (use cached jobs list when available).
+	queued, printing := 0, 0
+	for _, j := range a.jobs.jobs {
+		switch j.Status {
+		case "queued":
+			queued++
+		case "printing":
+			printing++
+		}
+	}
+	q := seg("queued "+itoa(queued), colorTextBright, BgHover, false)
+	p := seg("printing "+itoa(printing), colorTextBright, BgHover, false)
+
+	// Last message (colored by severity).
+	msgText := "ready"
+	msgBg := BgCard
+	msgFg := colorTextNormal
+	if len(a.logs) > 0 {
+		last := a.logs[len(a.logs)-1]
+		msgText = last.message
+		switch last.level {
+		case "error":
+			msgBg = Error
+			msgFg = colorTextBright
+		case "warning":
+			msgBg = Warning
+			msgFg = colorTextBright
+		case "success":
+			msgBg = Success
+			msgFg = colorTextBright
+		default:
+			msgBg = BgConsole
+			msgFg = colorTextBright
+		}
 	}
 
-	if len(lines) == 0 {
-		lines = append(lines, TextMuted.Render(" No logs yet..."))
+	// Uptime lives on the far right, as requested.
+	uptime := time.Since(a.startTime)
+	h := int(uptime.Hours())
+	m := int(uptime.Minutes()) % 60
+	up := seg("up "+pad2(h)+":"+pad2(m), colorTextBright, Primary, true)
+
+	// Compose left side first, then allocate space for message.
+	leftFixed := mode + pipe + port + pipe + pr + pipe + q + pipe + p + pipe
+	// Remaining width for message (keep at least 10 chars).
+	remaining := a.width - lipgloss.Width(leftFixed) - lipgloss.Width(pipe) - lipgloss.Width(up)
+	if remaining < 10 {
+		remaining = 10
+	}
+	msgText = Truncate(msgText, remaining)
+	msg := seg(msgText, msgFg, msgBg, false)
+
+	left := leftFixed + msg
+	gap := a.width - lipgloss.Width(left) - lipgloss.Width(pipe) - lipgloss.Width(up)
+	if gap < 1 {
+		gap = 1
 	}
 
-	// Pad to exactly maxLines to ensure consistent height
-	for len(lines) < maxLines {
-		lines = append(lines, "")
-	}
-
-	content := strings.Join(lines, "\n")
-
-	return ConsoleStyle.
-		Width(width).
-		Height(height).
-		Render(content)
+	line := left + strings.Repeat(" ", gap) + pipe + up
+	return base.Width(a.width).Render(line)
 }
 
-func (a *App) renderHelp() string {
+func (a *App) renderCommandArea() string {
+	// A small "terminal" zone: results above, input on last line.
+	// Background matches the app chrome.
+	base := lipgloss.NewStyle().Background(BgCard).Foreground(colorTextNormal)
+	view := a.command.View()
+
+	// Ensure fixed height.
+	lines := strings.Split(view, "\n")
+	h := a.bottomAreaHeight()
+	if len(lines) < h {
+		for len(lines) < h {
+			lines = append(lines, "")
+		}
+	} else if len(lines) > h {
+		lines = lines[len(lines)-h:]
+	}
+	return base.Width(a.width).Height(h).Render(strings.Join(lines, "\n"))
+}
+
+func (a *App) bottomAreaHeight() int {
 	if a.command.IsVisible() {
-		return HelpBarStyle.Width(a.width).Render(
-			RenderHelp("enter", "execute") + "  " +
-				RenderHelp("esc", "close"),
-		)
+		// Neovim-like commandline: a few lines for output + input.
+		h := a.height / 3
+		if h < 5 {
+			h = 5
+		}
+		if h > 10 {
+			h = 10
+		}
+		return h
 	}
-
-	var help string
-
-	switch a.activeTab {
-	case TabPrinters:
-		help = a.printers.Help()
-	case TabJobs:
-		help = a.jobs.Help()
-	case TabPrint:
-		help = a.printTab.Help()
-	}
-
-	globalHelp := RenderHelp("1/2/3", "nav") + "  " +
-		RenderHelp("click", "nav") + "  " +
-		RenderHelp("tab", "next") + "  " +
-		RenderHelp(":", "command") + "  " +
-		RenderHelp("q", "quit")
-
-	fullHelp := help + "  │  " + globalHelp
-
-	return HelpBarStyle.Width(a.width).Render(fullHelp)
+	return 1
 }
 
 func (a *App) addLog(message, level string) {
@@ -638,4 +572,43 @@ func (w *appLogWriter) Write(p []byte) (n int, err error) {
 		w.app.addLog(message, "info")
 	}
 	return len(p), nil
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func pad2(v int) string {
+	if v < 10 {
+		return "0" + itoa(v)
+	}
+	return itoa(v)
+}
+
+func itoa(v int) string {
+	// Small, dependency-free int->string for statusline.
+	// (Avoid importing strconv just for this file.)
+	if v == 0 {
+		return "0"
+	}
+	neg := false
+	if v < 0 {
+		neg = true
+		v = -v
+	}
+	var buf [32]byte
+	i := len(buf)
+	for v > 0 {
+		i--
+		buf[i] = byte('0' + (v % 10))
+		v /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
 }

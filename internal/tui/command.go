@@ -31,10 +31,10 @@ type CommandModel struct {
 // NewCommandModel creates a new command model
 func NewCommandModel(executor *command.Executor) CommandModel {
 	input := textinput.New()
-	input.Placeholder = "Enter command (e.g., 'printer list', 'help')"
+	input.Placeholder = "command…"
 	input.CharLimit = 200
-	input.Prompt = "> "
-	input.PromptStyle = lipgloss.NewStyle().Foreground(Secondary)
+	input.Prompt = ":"
+	input.PromptStyle = lipgloss.NewStyle().Foreground(Secondary).Bold(true)
 
 	return CommandModel{
 		executor: executor,
@@ -50,8 +50,9 @@ func (m *CommandModel) SetSize(width int) {
 		width = 40
 	}
 	m.width = width
-	// Input width should account for prompt and padding
-	m.input.Width = width - 6
+	// Input width should account for prompt.
+	// We want to fill the full line in the bottom "command area".
+	m.input.Width = width - 2
 }
 
 // SetHeight sets the maximum height for the command view
@@ -195,36 +196,19 @@ func (m CommandModel) View() string {
 		return ""
 	}
 
-	// Calculate available height for results
-	// Header (1) + blank (1) + input (1) + blank (1) + help (2) = 6 lines minimum
-	// Plus some padding
-	headerHeight := 3 // Title + blank + input
-	footerHeight := 2 // Help text
-	availableHeight := m.height - headerHeight - footerHeight
-	if m.height == 0 {
-		// If height not set, use a reasonable default
-		availableHeight = 15
+	height := m.height
+	if height <= 0 {
+		height = 7
 	}
-	if availableHeight < 5 {
-		availableHeight = 5 // Minimum for results
+	if height < 2 {
+		height = 2
 	}
 
-	var b strings.Builder
-
-	// Title
-	b.WriteString(HeaderStyle.Render("Command"))
-	b.WriteString("\n\n")
-
-	// Command input box
-	inputView := m.input.View()
-	boxStyle := InputFocusedStyle.
-		Width(m.width-4).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(Secondary).
-		Padding(0, 1)
-
-	b.WriteString(boxStyle.Render(inputView))
-	b.WriteString("\n")
+	// Reserve last line for input, everything above is "terminal output".
+	resultHeight := height - 1
+	if resultHeight < 0 {
+		resultHeight = 0
+	}
 
 	// Build result content first to calculate total lines
 	var resultLines []string
@@ -237,9 +221,9 @@ func (m CommandModel) View() string {
 					// Help text - wrap it properly
 					helpLines := strings.Split(m.lastResult.Message, "\n")
 					for _, line := range helpLines {
-						if len(line) > m.width-4 {
+						if len(line) > m.width-2 {
 							// Wrap long lines
-							wrapped := wrapText(line, m.width-4)
+							wrapped := wrapText(line, m.width-2)
 							for _, wline := range wrapped {
 								resultLines = append(resultLines, TextMuted.Render(wline))
 							}
@@ -250,8 +234,8 @@ func (m CommandModel) View() string {
 				} else {
 					// Wrap message if needed
 					msg := "✓ " + m.lastResult.Message
-					if len(msg) > m.width-4 {
-						wrapped := wrapText(msg, m.width-4)
+					if len(msg) > m.width-2 {
+						wrapped := wrapText(msg, m.width-2)
 						for _, line := range wrapped {
 							resultLines = append(resultLines, SuccessStyle.Render(line))
 						}
@@ -261,7 +245,7 @@ func (m CommandModel) View() string {
 				}
 			}
 			// Show data if present
-			if m.lastResult.Data != nil && len(m.lastResult.Data) > 0 {
+			if len(m.lastResult.Data) > 0 {
 				// Try to display printers
 				printersVal, hasPrinters := m.lastResult.Data["printers"]
 				if hasPrinters {
@@ -385,8 +369,8 @@ func (m CommandModel) View() string {
 		} else {
 			// Wrap error message
 			errMsg := "✗ " + m.lastResult.Error
-			if len(errMsg) > m.width-4 {
-				wrapped := wrapText(errMsg, m.width-4)
+			if len(errMsg) > m.width-2 {
+				wrapped := wrapText(errMsg, m.width-2)
 				for _, line := range wrapped {
 					resultLines = append(resultLines, ErrorStyle.Render(line))
 				}
@@ -398,7 +382,7 @@ func (m CommandModel) View() string {
 
 	// Apply scrolling (calculate limits, but don't modify m.scrollPos in View)
 	totalLines := len(resultLines)
-	maxScroll := totalLines - availableHeight
+	maxScroll := totalLines - resultHeight
 	if maxScroll < 0 {
 		maxScroll = 0
 	}
@@ -412,44 +396,49 @@ func (m CommandModel) View() string {
 
 	// Render visible lines
 	start := scrollPos
-	end := start + availableHeight
+	end := start + resultHeight
 	if end > totalLines {
 		end = totalLines
 	}
 
-	if totalLines > 0 {
-		b.WriteString("\n")
-		for i := start; i < end; i++ {
-			b.WriteString(resultLines[i])
-			b.WriteString("\n")
-		}
+	var outLines []string
 
-		// Show scroll indicator
-		if totalLines > availableHeight {
-			if scrollPos > 0 && scrollPos < maxScroll {
-				b.WriteString(TextMuted.Render(fmt.Sprintf("  ... (↑/↓ to scroll, %d/%d lines) ...", scrollPos+1, totalLines)))
-			} else if scrollPos > 0 {
-				b.WriteString(TextMuted.Render(fmt.Sprintf("  ... (↑ to scroll, %d/%d lines)", scrollPos+1, totalLines)))
-			} else if scrollPos < maxScroll {
-				b.WriteString(TextMuted.Render(fmt.Sprintf("  ... (↓ to scroll, %d/%d lines) ...", scrollPos+1, totalLines)))
+	// Results area (top)
+	if resultHeight > 0 {
+		if totalLines == 0 {
+			outLines = append(outLines, TextMuted.Render("type :help for commands • esc to exit"))
+			for len(outLines) < resultHeight {
+				outLines = append(outLines, "")
 			}
-			b.WriteString("\n")
+		} else {
+			for i := start; i < end; i++ {
+				outLines = append(outLines, resultLines[i])
+			}
+			// Pad to fixed height
+			for len(outLines) < resultHeight {
+				outLines = append(outLines, "")
+			}
+			// Minimal scroll indicator in the first line if needed
+			if totalLines > resultHeight && len(outLines) > 0 {
+				indicator := TextMuted.Render(fmt.Sprintf("… %d/%d (↑/↓ scroll) …", scrollPos+1, totalLines))
+				outLines[0] = indicator
+			}
 		}
 	}
 
-	// Help text
-	b.WriteString("\n")
-	helpText := "Press Enter to execute, Esc to close"
-	if totalLines > availableHeight {
-		helpText += ", ↑/↓ to scroll"
-	}
-	if len(m.printerIDs) > 0 {
-		helpText += ", Ctrl+J/K select printer, Ctrl+Y copy ID"
-	}
-	b.WriteString(TextMuted.Render(helpText))
+	// Input line (bottom)
+	inputLine := lipgloss.NewStyle().Foreground(colorTextBright).Background(BgConsole).Padding(0, 1).Render(m.input.View())
+	outLines = append(outLines, inputLine)
 
-	// Return the content - the overlay will handle height constraints
-	return b.String()
+	// Ensure exact height.
+	if len(outLines) > height {
+		outLines = outLines[len(outLines)-height:]
+	}
+	for len(outLines) < height {
+		outLines = append(outLines, "")
+	}
+
+	return strings.Join(outLines, "\n")
 }
 
 func extractPrinterIDs(res *command.Result) []string {
