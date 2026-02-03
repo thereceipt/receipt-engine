@@ -47,8 +47,6 @@ type PrintModel struct {
 	// Variable inputs
 	variables    []variableInput
 	varCursor    int
-	varScroll    int
-	varViewport  int
 	inputFocused bool
 
 	// Focus state: 0=files, 1=printers, 2=variables, 3=print button
@@ -104,12 +102,6 @@ func NewPrintModel(manager *printer.Manager, queue *printer.PrintQueue) PrintMod
 func (m *PrintModel) SetSize(width, height int) {
 	m.width = width
 	m.height = height
-	// Approximate viewport for variable scrolling; actual layout may differ slightly,
-	// but this keeps navigation stable and avoids hidden cursor.
-	m.varViewport = height - 12
-	if m.varViewport < 4 {
-		m.varViewport = 4
-	}
 }
 
 func (m *PrintModel) refreshFiles() {
@@ -218,9 +210,6 @@ func (m *PrintModel) loadReceipt(path string) {
 
 	// Setup variable inputs
 	m.variables = []variableInput{}
-	m.varCursor = 0
-	m.varScroll = 0
-	m.inputFocused = false
 	for _, v := range receipt.Variables {
 		input := textinput.New()
 		input.Placeholder = v.ValueType
@@ -322,14 +311,6 @@ func (m PrintModel) Update(msg tea.Msg) (PrintModel, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Always-available print shortcut (even when focus isn't on the button).
-		// Keep this before input handling so it works reliably.
-		switch msg.String() {
-		case "ctrl+p":
-			m.print()
-			return m, nil
-		}
-
 		// File toolbar focus (vim-tree-ish)
 		if m.focus == 0 && m.toolbarFocus && !m.filtering {
 			switch msg.String() {
@@ -409,15 +390,10 @@ func (m PrintModel) Update(msg tea.Msg) (PrintModel, tea.Cmd) {
 				m.inputFocused = false
 				m.variables[m.varCursor].input.Blur()
 				return m, nil
-			case "ctrl+p":
-				// Allow printing without leaving the input field.
-				m.print()
-				return m, nil
 			case "tab":
 				m.variables[m.varCursor].input.Blur()
 				m.varCursor = (m.varCursor + 1) % len(m.variables)
 				m.variables[m.varCursor].input.Focus()
-				m.adjustVarScroll()
 				return m, nil
 			default:
 				m.variables[m.varCursor].input, cmd = m.variables[m.varCursor].input.Update(msg)
@@ -430,40 +406,6 @@ func (m PrintModel) Update(msg tea.Msg) (PrintModel, tea.Cmd) {
 			m.navigateUp()
 		case "down", "j":
 			m.navigateDown()
-		case "pageup":
-			if m.focus == 2 && !m.inputFocused && len(m.variables) > 0 {
-				step := m.varViewport
-				if step < 1 {
-					step = 1
-				}
-				m.varCursor -= step
-				if m.varCursor < 0 {
-					m.varCursor = 0
-				}
-				m.adjustVarScroll()
-			}
-		case "pagedown":
-			if m.focus == 2 && !m.inputFocused && len(m.variables) > 0 {
-				step := m.varViewport
-				if step < 1 {
-					step = 1
-				}
-				m.varCursor += step
-				if m.varCursor >= len(m.variables) {
-					m.varCursor = len(m.variables) - 1
-				}
-				m.adjustVarScroll()
-			}
-		case "home":
-			if m.focus == 2 && !m.inputFocused && len(m.variables) > 0 {
-				m.varCursor = 0
-				m.adjustVarScroll()
-			}
-		case "end":
-			if m.focus == 2 && !m.inputFocused && len(m.variables) > 0 {
-				m.varCursor = len(m.variables) - 1
-				m.adjustVarScroll()
-			}
 		case "left", "h":
 			if m.focus > 0 {
 				m.focus--
@@ -563,20 +505,6 @@ func (m *PrintModel) navigateUp() {
 	case 2: // Variables
 		if m.varCursor > 0 {
 			m.varCursor--
-			m.adjustVarScroll()
-			return
-		}
-		// At the top of variables: move vertically to printers.
-		m.focus = 1
-	case 3: // Print button
-		// Move vertically back up into variables (or printers if no variables).
-		if len(m.variables) > 0 {
-			m.focus = 2
-			// Jump to the bottom of variables so it's intuitive.
-			m.varCursor = len(m.variables) - 1
-			m.adjustVarScroll()
-		} else {
-			m.focus = 1
 		}
 	}
 }
@@ -598,26 +526,11 @@ func (m *PrintModel) navigateDown() {
 	case 1: // Printers
 		if m.printerCursor < len(m.printers)-1 {
 			m.printerCursor++
-			return
-		}
-		// At the bottom of printers: move vertically to variables (if any), otherwise to print.
-		if len(m.variables) > 0 {
-			m.focus = 2
-			m.varCursor = 0
-			m.adjustVarScroll()
-		} else {
-			m.focus = 3
 		}
 	case 2: // Variables
 		if m.varCursor < len(m.variables)-1 {
 			m.varCursor++
-			m.adjustVarScroll()
-			return
 		}
-		// At the bottom of variables: move vertically to print button.
-		m.focus = 3
-	case 3: // Print button
-		// Nothing below print.
 	}
 }
 
@@ -708,11 +621,10 @@ func (m PrintModel) View() string {
 		leftWidth = 60
 	}
 	// Ensure right side doesn't collapse
-	gap := 2 // spaces between columns
-	if effW-leftWidth-gap < 40 {
-		leftWidth = maxInt(34, effW-gap-40)
+	if effW-leftWidth-6 < 40 {
+		leftWidth = maxInt(34, effW-6-40)
 	}
-	rightWidth := effW - leftWidth - gap
+	rightWidth := effW - leftWidth - 6
 
 	// Left column: File browser
 	filesView := m.renderFiles(leftWidth, columnsHeight)
@@ -724,7 +636,7 @@ func (m PrintModel) View() string {
 	columns := lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		filesView,
-		strings.Repeat(" ", gap),
+		"  ",
 		rightView,
 	)
 
@@ -749,12 +661,6 @@ func (m PrintModel) View() string {
 
 func (m PrintModel) renderFiles(width, height int) string {
 	focused := m.focus == 0
-	// Keep the left panel from causing horizontal overflow.
-	// The rendered box includes border (2) + horizontal padding (2) = 4 extra columns.
-	innerW := width - 4
-	if innerW < 10 {
-		innerW = 10
-	}
 
 	// --- Toolbar header (modern, chip-like, tasteful) ---
 	chip := func(text string, fg, bg lipgloss.Color, bold bool, selected bool) string {
@@ -798,30 +704,16 @@ func (m PrintModel) renderFiles(width, height int) string {
 
 	toolbar := lipgloss.JoinHorizontal(lipgloss.Top, titleChip, "  ", mode, "  ", hidden, "  ", filter)
 
-	pathLine := TextMuted.Render(Truncate(m.currentDir, innerW-2))
+	pathLine := TextMuted.Render(Truncate(m.currentDir, width-2))
 
 	// Optional interactive filter prompt line
 	filterLine := ""
 	if m.filtering && focused {
-		// Match the rest of the app's input styling, and keep it from spanning
-		// the entire file panel width.
-		// Cap width for aesthetics; still shrink on small terminals.
-		boxW := minInt(innerW, 44) // total width incl border/padding
-		if boxW < 18 {
-			boxW = innerW
-		}
-		// Textinput.Width excludes the prompt; account for border+padding too.
-		promptW := lipgloss.Width(m.filterInput.Prompt)
-		inputW := boxW - 4 - promptW
-		if inputW < 10 {
-			inputW = 10
-		}
-		m.filterInput.Width = inputW
-
 		filterLine = InputFocusedStyle.Copy().
-			Width(boxW).
-			MarginLeft(0).
-			MarginTop(0).
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(Secondary).
+			Padding(0, 1).
+			Width(width - 4).
 			Render(m.filterInput.View())
 	}
 
@@ -892,7 +784,7 @@ func (m PrintModel) renderFiles(width, height int) string {
 		} else if strings.HasSuffix(strings.ToLower(f.name), ".receipt") {
 			nameStyle = lipgloss.NewStyle().Foreground(Primary).Bold(true)
 		}
-		name = nameStyle.Render(Truncate(name, innerW-12))
+		name = nameStyle.Render(Truncate(name, width-12))
 
 		line := fmt.Sprintf("%s%s%s %s", cursor, branch, kind, name)
 		list.WriteString(style.Render(line))
@@ -915,7 +807,7 @@ func (m PrintModel) renderFiles(width, height int) string {
 	body += "\n" + list.String()
 
 	panelStyle := lipgloss.NewStyle().
-		Width(innerW).
+		Width(width).
 		Height(height).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(BgHover).
@@ -928,27 +820,6 @@ func (m PrintModel) renderFiles(width, height int) string {
 }
 
 func (m PrintModel) renderRight(width, height int) string {
-	if width < 20 {
-		width = 20
-	}
-	// Expand variable input boxes to use available width (without overflowing).
-	m.setVariableInputWidths(width)
-
-	footer := m.renderPrintFooter(width)
-	footerH := lipgloss.Height(footer)
-	bodyH := height - footerH
-	if bodyH < 1 {
-		bodyH = 1
-	}
-
-	body := m.renderRightBody(width, bodyH)
-
-	// Make right side match left side height for a clean split layout.
-	out := lipgloss.JoinVertical(lipgloss.Left, body, footer)
-	return lipgloss.NewStyle().Width(width).Height(height).Render(out)
-}
-
-func (m PrintModel) renderRightBody(width, height int) string {
 	var b strings.Builder
 
 	// Receipt info
@@ -961,25 +832,15 @@ func (m PrintModel) renderRightBody(width, height int) string {
 	// Variables (if any)
 	if len(m.variables) > 0 {
 		b.WriteString("\n\n")
-
-		topH := lipgloss.Height(b.String())
-		remaining := height - topH
-		if remaining < 1 {
-			remaining = 1
-		}
-		b.WriteString(m.renderVariablesViewport(width, remaining))
+		b.WriteString(m.renderVariables())
 	}
 
-	// Clamp to body height (footer is handled separately).
-	lines := strings.Split(b.String(), "\n")
-	if len(lines) > height {
-		lines = lines[:height]
-	} else {
-		for len(lines) < height {
-			lines = append(lines, "")
-		}
-	}
-	return strings.Join(lines, "\n")
+	// Print button
+	b.WriteString("\n\n")
+	b.WriteString(m.renderPrintButton())
+
+	// Make right side match left side height for a clean split layout.
+	return lipgloss.NewStyle().Width(width).Height(height).Render(b.String())
 }
 
 func (m PrintModel) renderReceiptInfo() string {
@@ -1102,160 +963,6 @@ func (m PrintModel) renderPrintButton() string {
 	return ButtonInactiveStyle.Render("▶ Print Receipt")
 }
 
-func (m PrintModel) renderPrintFooter(width int) string {
-	// Sticky footer: always visible, so the Print action never disappears.
-	btnStyle := ButtonInactiveStyle.Copy().MarginTop(0)
-	if m.focus == 3 {
-		btnStyle = ButtonStyle.Copy().MarginTop(0)
-	}
-	btn := btnStyle.Render("▶ Print Receipt")
-
-	// Right-side hint, only if it fits.
-	hint := TextMuted.Render("ctrl+p / p")
-	gap := width - lipgloss.Width(btn) - lipgloss.Width(hint)
-	if gap < 1 {
-		// Not enough room; prioritize the button.
-		return lipgloss.NewStyle().Width(width).Render(btn)
-	}
-	line := btn + strings.Repeat(" ", gap) + hint
-	return lipgloss.NewStyle().Width(width).Render(line)
-}
-
-func (m PrintModel) renderVariablesViewport(width, height int) string {
-	// height is the total space available for the variables section (including header).
-	if height <= 0 {
-		return ""
-	}
-
-	focused := m.focus == 2
-	headerStyle := SectionHeaderStyle
-	if focused {
-		headerStyle = SectionHeaderStyle.Copy().Foreground(Secondary)
-	}
-
-	// Build all variable lines first (2 lines per variable: label + input).
-	lines := make([]string, 0, len(m.variables)*2)
-	for i, v := range m.variables {
-		isSelected := i == m.varCursor && focused
-
-		label := fmt.Sprintf("%s (%s)", v.name, v.valueType)
-		if isSelected {
-			lines = append(lines, InputLabelFocusedStyle.Render(label))
-		} else {
-			lines = append(lines, InputLabelStyle.Render(label))
-		}
-
-		inputView := v.input.View()
-		if (m.inputFocused && i == m.varCursor) || isSelected {
-			lines = append(lines, InputFocusedStyle.Render(inputView))
-		} else {
-			lines = append(lines, InputStyle.Render(inputView))
-		}
-	}
-
-	viewport := height - 1
-	if viewport < 1 {
-		viewport = 1
-	}
-
-	// Clamp scroll locally (state is maintained via adjustVarScroll()).
-	scroll := m.varScroll
-	if scroll < 0 {
-		scroll = 0
-	}
-	maxScroll := len(lines) - viewport
-	if maxScroll < 0 {
-		maxScroll = 0
-	}
-	if scroll > maxScroll {
-		scroll = maxScroll
-	}
-
-	start := scroll
-	end := start + viewport
-	if end > len(lines) {
-		end = len(lines)
-	}
-
-	indicator := ""
-	if len(lines) > viewport {
-		indicator = fmt.Sprintf(" (%d/%d)", (start/2)+1, len(m.variables))
-	}
-	header := headerStyle.Render("VARIABLES" + indicator)
-
-	var out []string
-	out = append(out, header)
-	out = append(out, lines[start:end]...)
-	for len(out) < height {
-		out = append(out, "")
-	}
-	if len(out) > height {
-		out = out[:height]
-	}
-	return lipgloss.NewStyle().Width(width).Render(strings.Join(out, "\n"))
-}
-
-func (m *PrintModel) setVariableInputWidths(panelW int) {
-	// InputStyle adds border+padding; keep a little breathing room.
-	target := panelW - 8
-	if target < 10 {
-		target = 10
-	}
-	// Avoid comically wide inputs.
-	if target > 80 {
-		target = 80
-	}
-	for i := range m.variables {
-		m.variables[i].input.Width = target
-	}
-}
-
-func (m *PrintModel) adjustVarScroll() {
-	if len(m.variables) == 0 {
-		m.varScroll = 0
-		return
-	}
-
-	// 2 lines per variable (label + input).
-	cursorLine := m.varCursor * 2
-
-	viewport := m.varViewport
-	if viewport < 4 {
-		viewport = 4
-	}
-	// We render a variables header above the viewport.
-	viewportLines := viewport - 1
-	if viewportLines < 1 {
-		viewportLines = 1
-	}
-
-	if cursorLine < m.varScroll {
-		m.varScroll = cursorLine
-	}
-	if cursorLine >= m.varScroll+viewportLines {
-		m.varScroll = cursorLine - viewportLines + 1
-	}
-
-	if m.varScroll < 0 {
-		m.varScroll = 0
-	}
-
-	maxScroll := (len(m.variables) * 2) - viewportLines
-	if maxScroll < 0 {
-		maxScroll = 0
-	}
-	if m.varScroll > maxScroll {
-		m.varScroll = maxScroll
-	}
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func (m *PrintModel) adjustFileScroll() {
 	// Calculate a reasonable viewport size for the file list based on current height.
 	// The exact number isn't critical; it just keeps the cursor visible.
@@ -1296,6 +1003,5 @@ func (m PrintModel) Help() string {
 		RenderHelp(".", "hidden") + "  " +
 		RenderHelp("f", "all files") + "  " +
 		RenderHelp("~", "home") + "  " +
-		RenderHelp("p", "print") + "  " +
-		RenderHelp("ctrl+p", "print")
+		RenderHelp("p", "print")
 }
