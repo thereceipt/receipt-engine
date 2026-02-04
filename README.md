@@ -1,5 +1,7 @@
 # Receipt Engine
 
+(proof of concept, all vibe-coded)
+
 A high-performance, cross-platform thermal printer server written in Go. Supports USB, Serial, and Network printers with a rich JSON-based receipt format.
 
 ## 🚀 Quick Start
